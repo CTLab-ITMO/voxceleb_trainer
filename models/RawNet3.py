@@ -8,7 +8,7 @@ from models.RawNetBasicBlock import Bottle2neck, PreEmphasis
 
 
 class RawNet3(nn.Module):
-    def __init__(self, block, model_scale, context, summed, C=1024, **kwargs):
+    def __init__(self, block, model_scale, context, summed, C=1024, disable_adapter=False, **kwargs):
         super().__init__()
 
         nOut = kwargs["nOut"]
@@ -19,6 +19,7 @@ class RawNet3(nn.Module):
         self.norm_sinc = kwargs["norm_sinc"]
         self.out_bn = kwargs["out_bn"]
         self.summed = summed
+        self.disable_adapter = disable_adapter
 
         self.preprocess = nn.Sequential(
             PreEmphasis(), nn.InstanceNorm1d(1, eps=1e-4, affine=True)
@@ -42,25 +43,28 @@ class RawNet3(nn.Module):
         self.layer3 = block(C, C, kernel_size=3, dilation=4, scale=model_scale)
         self.layer4 = nn.Conv1d(3 * C, 1536, kernel_size=1)
 
-        if self.context:
-            attn_input = 1536 * 3
+        if self.disable_adapter:
+            print("Adapter disabled - using global average pooling")
         else:
-            attn_input = 1536
-        print("self.encoder_type", self.encoder_type)
-        if self.encoder_type == "ECA":
-            attn_output = 1536
-        elif self.encoder_type == "ASP":
-            attn_output = 1
-        else:
-            raise ValueError("Undefined encoder")
+            if self.context:
+                attn_input = 1536 * 3
+            else:
+                attn_input = 1536
+            print("self.encoder_type", self.encoder_type)
+            if self.encoder_type == "ECA":
+                attn_output = 1536
+            elif self.encoder_type == "ASP":
+                attn_output = 1
+            else:
+                raise ValueError("Undefined encoder")
 
-        self.attention = nn.Sequential(
-            nn.Conv1d(attn_input, 128, kernel_size=1),
-            nn.ReLU(),
-            nn.BatchNorm1d(128),
-            nn.Conv1d(128, attn_output, kernel_size=1),
-            nn.Softmax(dim=2),
-        )
+            self.attention = nn.Sequential(
+                nn.Conv1d(attn_input, 128, kernel_size=1),
+                nn.ReLU(),
+                nn.BatchNorm1d(128),
+                nn.Conv1d(128, attn_output, kernel_size=1),
+                nn.Softmax(dim=2),
+            )
 
         self.bn5 = nn.BatchNorm1d(3072)
 
@@ -101,30 +105,36 @@ class RawNet3(nn.Module):
 
         t = x.size()[-1]
 
-        if self.context:
-            global_x = torch.cat(
-                (
-                    x,
-                    torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t),
-                    torch.sqrt(
-                        torch.var(x, dim=2, keepdim=True).clamp(
-                            min=1e-4, max=1e4
-                        )
-                    ).repeat(1, 1, t),
-                ),
-                dim=1,
-            )
+        if self.disable_adapter:
+            # Simple global average and standard deviation pooling
+            mu = torch.mean(x, dim=2)
+            sg = torch.sqrt(torch.var(x, dim=2).clamp(min=1e-4, max=1e4))
+            x = torch.cat((mu, sg), 1)
         else:
-            global_x = x
+            if self.context:
+                global_x = torch.cat(
+                    (
+                        x,
+                        torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t),
+                        torch.sqrt(
+                            torch.var(x, dim=2, keepdim=True).clamp(
+                                min=1e-4, max=1e4
+                            )
+                        ).repeat(1, 1, t),
+                    ),
+                    dim=1,
+                )
+            else:
+                global_x = x
 
-        w = self.attention(global_x)
+            w = self.attention(global_x)
 
-        mu = torch.sum(x * w, dim=2)
-        sg = torch.sqrt(
-            (torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4, max=1e4)
-        )
+            mu = torch.sum(x * w, dim=2)
+            sg = torch.sqrt(
+                (torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4, max=1e4)
+            )
 
-        x = torch.cat((mu, sg), 1)
+            x = torch.cat((mu, sg), 1)
 
         x = self.bn5(x)
 
@@ -136,9 +146,8 @@ class RawNet3(nn.Module):
         return x
 
 
-def MainModel(**kwargs):
-
+def MainModel(disable_adapter=False, **kwargs):
     model = RawNet3(
-        Bottle2neck, model_scale=8, context=True, summed=True, out_bn=False, log_sinc=True, norm_sinc="mean", grad_mult=1, **kwargs
+        Bottle2neck, model_scale=8, context=True, summed=True, out_bn=False, log_sinc=True, norm_sinc="mean", grad_mult=1, disable_adapter=disable_adapter, **kwargs
     )
     return model

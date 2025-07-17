@@ -10,7 +10,7 @@ from models.ResNetBlocks import *
 from utils import PreEmphasis
 
 class ResNetSE(nn.Module):
-    def __init__(self, block, layers, num_filters, nOut, encoder_type='SAP', n_mels=40, log_input=True, **kwargs):
+    def __init__(self, block, layers, num_filters, nOut, encoder_type='SAP', n_mels=40, log_input=True, disable_adapter=False, **kwargs):
         super(ResNetSE, self).__init__()
 
         print('Embedding size is %d, encoder %s.'%(nOut, encoder_type))
@@ -19,6 +19,7 @@ class ResNetSE(nn.Module):
         self.encoder_type = encoder_type
         self.n_mels     = n_mels
         self.log_input  = log_input
+        self.disable_adapter = disable_adapter
 
         self.conv1 = nn.Conv2d(1, num_filters[0] , kernel_size=3, stride=1, padding=1)
         self.relu = nn.ReLU(inplace=True)
@@ -38,20 +39,24 @@ class ResNetSE(nn.Module):
 
         outmap_size = int(self.n_mels/8)
 
-        self.attention = nn.Sequential(
-            nn.Conv1d(num_filters[3] * outmap_size, 128, kernel_size=1),
-            nn.ReLU(),
-            nn.BatchNorm1d(128),
-            nn.Conv1d(128, num_filters[3] * outmap_size, kernel_size=1),
-            nn.Softmax(dim=2),
-            )
-
-        if self.encoder_type == "SAP":
+        if self.disable_adapter:
             out_dim = num_filters[3] * outmap_size
-        elif self.encoder_type == "ASP":
-            out_dim = num_filters[3] * outmap_size * 2
+            print("Adapter disabled - using global average pooling")
         else:
-            raise ValueError('Undefined encoder')
+            self.attention = nn.Sequential(
+                nn.Conv1d(num_filters[3] * outmap_size, 128, kernel_size=1),
+                nn.ReLU(),
+                nn.BatchNorm1d(128),
+                nn.Conv1d(128, num_filters[3] * outmap_size, kernel_size=1),
+                nn.Softmax(dim=2),
+                )
+
+            if self.encoder_type == "SAP":
+                out_dim = num_filters[3] * outmap_size
+            elif self.encoder_type == "ASP":
+                out_dim = num_filters[3] * outmap_size * 2
+            else:
+                raise ValueError('Undefined encoder')
 
         self.fc = nn.Linear(out_dim, nOut)
 
@@ -103,14 +108,18 @@ class ResNetSE(nn.Module):
 
         x = x.reshape(x.size()[0],-1,x.size()[-1])
 
-        w = self.attention(x)
+        if self.disable_adapter:
+            # Simple global average pooling without attention
+            x = torch.mean(x, dim=2)
+        else:
+            w = self.attention(x)
 
-        if self.encoder_type == "SAP":
-            x = torch.sum(x * w, dim=2)
-        elif self.encoder_type == "ASP":
-            mu = torch.sum(x * w, dim=2)
-            sg = torch.sqrt( ( torch.sum((x**2) * w, dim=2) - mu**2 ).clamp(min=1e-5) )
-            x = torch.cat((mu,sg),1)
+            if self.encoder_type == "SAP":
+                x = torch.sum(x * w, dim=2)
+            elif self.encoder_type == "ASP":
+                mu = torch.sum(x * w, dim=2)
+                sg = torch.sqrt( ( torch.sum((x**2) * w, dim=2) - mu**2 ).clamp(min=1e-5) )
+                x = torch.cat((mu,sg),1)
 
         x = x.view(x.size()[0], -1)
         x = self.fc(x)

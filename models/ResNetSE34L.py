@@ -9,7 +9,7 @@ from torch.nn import Parameter
 from models.ResNetBlocks import *
 
 class ResNetSE(nn.Module):
-    def __init__(self, block, layers, num_filters, nOut, encoder_type='SAP', n_mels=40, log_input=True, **kwargs):
+    def __init__(self, block, layers, num_filters, nOut, encoder_type='SAP', n_mels=40, log_input=True, disable_adapter=False, **kwargs):
         super(ResNetSE, self).__init__()
 
         print('Embedding size is %d, encoder %s.'%(nOut, encoder_type))
@@ -18,6 +18,7 @@ class ResNetSE(nn.Module):
         self.encoder_type = encoder_type
         self.n_mels     = n_mels
         self.log_input  = log_input
+        self.disable_adapter = disable_adapter
 
         self.conv1 = nn.Conv2d(1, num_filters[0] , kernel_size=7, stride=(2, 1), padding=3,
                                bias=False)
@@ -32,16 +33,20 @@ class ResNetSE(nn.Module):
         self.instancenorm   = nn.InstanceNorm1d(n_mels)
         self.torchfb        = torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_fft=512, win_length=400, hop_length=160, window_fn=torch.hamming_window, n_mels=n_mels)
 
-        if self.encoder_type == "SAP":
-            self.sap_linear = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
-            self.attention = self.new_parameter(num_filters[3] * block.expansion, 1)
+        if self.disable_adapter:
             out_dim = num_filters[3] * block.expansion
-        elif self.encoder_type == "ASP":
-            self.sap_linear = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
-            self.attention = self.new_parameter(num_filters[3] * block.expansion, 1)
-            out_dim = num_filters[3] * block.expansion * 2
+            print("Adapter disabled - using global average pooling")
         else:
-            raise ValueError('Undefined encoder')
+            if self.encoder_type == "SAP":
+                self.sap_linear = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
+                self.attention = self.new_parameter(num_filters[3] * block.expansion, 1)
+                out_dim = num_filters[3] * block.expansion
+            elif self.encoder_type == "ASP":
+                self.sap_linear = nn.Linear(num_filters[3] * block.expansion, num_filters[3] * block.expansion)
+                self.attention = self.new_parameter(num_filters[3] * block.expansion, 1)
+                out_dim = num_filters[3] * block.expansion * 2
+            else:
+                raise ValueError('Undefined encoder')
 
         self.fc = nn.Linear(out_dim, nOut)
 
@@ -93,20 +98,25 @@ class ResNetSE(nn.Module):
         
         x = torch.mean(x, dim=2, keepdim=True)
 
-        if self.encoder_type == "SAP":
+        if self.disable_adapter:
+            # Simple global average pooling without attention
             x = x.permute(0,3,1,2).squeeze(-1)
-            h = torch.tanh(self.sap_linear(x))
-            w = torch.matmul(h, self.attention).squeeze(dim=2)
-            w = F.softmax(w, dim=1).view(x.size(0), x.size(1), 1)
-            x = torch.sum(x * w, dim=1)
-        elif self.encoder_type == "ASP":
-            x = x.permute(0,3,1,2).squeeze(-1)
-            h = torch.tanh(self.sap_linear(x))
-            w = torch.matmul(h, self.attention).squeeze(dim=2)
-            w = F.softmax(w, dim=1).view(x.size(0), x.size(1), 1)
-            mu = torch.sum(x * w, dim=1)
-            rh = torch.sqrt( ( torch.sum((x**2) * w, dim=1) - mu**2 ).clamp(min=1e-5) )
-            x = torch.cat((mu,rh),1)
+            x = torch.mean(x, dim=1)
+        else:
+            if self.encoder_type == "SAP":
+                x = x.permute(0,3,1,2).squeeze(-1)
+                h = torch.tanh(self.sap_linear(x))
+                w = torch.matmul(h, self.attention).squeeze(dim=2)
+                w = F.softmax(w, dim=1).view(x.size(0), x.size(1), 1)
+                x = torch.sum(x * w, dim=1)
+            elif self.encoder_type == "ASP":
+                x = x.permute(0,3,1,2).squeeze(-1)
+                h = torch.tanh(self.sap_linear(x))
+                w = torch.matmul(h, self.attention).squeeze(dim=2)
+                w = F.softmax(w, dim=1).view(x.size(0), x.size(1), 1)
+                mu = torch.sum(x * w, dim=1)
+                rh = torch.sqrt( ( torch.sum((x**2) * w, dim=1) - mu**2 ).clamp(min=1e-5) )
+                x = torch.cat((mu,rh),1)
 
         x = x.view(x.size()[0], -1)
         x = self.fc(x)

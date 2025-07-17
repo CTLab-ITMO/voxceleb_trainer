@@ -9,6 +9,7 @@ import glob
 import zipfile
 import warnings
 import datetime
+from embedding_visualizer import EmbeddingVisualizer
 from tuneThreshold import *
 from SpeakerNet import *
 from DatasetLoader import *
@@ -77,6 +78,7 @@ parser.add_argument('--model',          type=str,   default="",     help='Name o
 parser.add_argument('--encoder_type',   type=str,   default="SAP",  help='Type of encoder')
 parser.add_argument('--nOut',           type=int,   default=512,    help='Embedding size in the last FC layer')
 parser.add_argument('--sinc_stride',    type=int,   default=10,    help='Stride size of the first analytic filterbank layer of RawNet3')
+parser.add_argument('--disable_adapter', dest='disable_adapter', action='store_true', help='Disable adapter in model')
 
 ## For test only
 parser.add_argument('--eval',           dest='eval', action='store_true', help='Eval only')
@@ -85,6 +87,8 @@ parser.add_argument('--eval',           dest='eval', action='store_true', help='
 parser.add_argument('--port',           type=str,   default="8888", help='Port for distributed training, input as text')
 parser.add_argument('--distributed',    dest='distributed', action='store_true', help='Enable distributed training')
 parser.add_argument('--mixedprec',      dest='mixedprec',   action='store_true', help='Enable mixed precision training')
+parser.add_argument('--visualize_embeddings', dest='visualize_embeddings', action='store_true', help='Visualize embeddings during evaluation')
+
 
 args = parser.parse_args()
 
@@ -179,6 +183,30 @@ def main_worker(gpu, ngpus_per_node, args):
 
         print('Total parameters: ',pytorch_total_params)
         print('Test list',args.test_list)
+        
+        if args.visualize_embeddings and args.gpu == 0:
+            print("Starting embedding visualization...")
+            
+            with open(args.test_list) as f:
+                lines = f.readlines()
+            
+            files = []
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) >= 3:
+                    files.extend([parts[1], parts[2]])
+            
+            files = list(set(files))  
+            
+            vis_dataset = test_dataset_loader(files, args.test_path, num_eval=args.num_eval, **vars(args))
+            vis_loader = torch.utils.data.DataLoader(vis_dataset, batch_size=1, shuffle=False, num_workers=args.nDataLoaderThread)
+            
+            viz_save_path = os.path.join(args.result_save_path, "embeddings_visualization")
+            visualizer = EmbeddingVisualizer(viz_save_path, max_samples_per_speaker=20)
+            
+            adapter_suffix = " (without adapter)" if args.disable_adapter else " (with adapter)"
+            
+            visualizer.visualize_embeddings(s, vis_loader, num_speakers=10, title_suffix=adapter_suffix)
         
         sc, lab, _ = trainer.evaluateFromList(**vars(args))
 

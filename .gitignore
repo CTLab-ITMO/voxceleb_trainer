@@ -119,3 +119,7 @@ venv.bak/
 # mypy
 .mypy_cache/
 /data2
+*.md
+test_adapter_comparison.py
+embedding_visualizer.py
+run
