@@ -8,14 +8,13 @@ import torch.nn.functional as F
 from torch.nn import Parameter
 
 class MainModel(nn.Module):
-    def __init__(self, nOut = 1024, encoder_type='SAP', log_input=True, disable_adapter=False, **kwargs):
+    def __init__(self, nOut = 1024, encoder_type='SAP', log_input=True, **kwargs):
         super(MainModel, self).__init__();
 
         print('Embedding size is %d, encoder %s.'%(nOut, encoder_type))
         
         self.encoder_type = encoder_type
         self.log_input    = log_input
-        self.disable_adapter = disable_adapter
 
         self.netcnn = nn.Sequential(
             nn.Conv2d(1, 96, kernel_size=(5,7), stride=(1,2), padding=(2,2)),
@@ -47,11 +46,7 @@ class MainModel(nn.Module):
             
         );
 
-        if self.disable_adapter:
-            self.encoder = nn.AdaptiveAvgPool2d((1,1))
-            out_dim = 512
-            print("Adapter disabled - using global average pooling")
-        elif self.encoder_type == "MAX":
+        if self.encoder_type == "MAX":
             self.encoder = nn.AdaptiveMaxPool2d((1,1))
             out_dim = 512
         elif self.encoder_type == "TAP":
@@ -84,10 +79,7 @@ class MainModel(nn.Module):
 
         x = self.netcnn(x);
 
-        if self.disable_adapter:
-            x = self.encoder(x)
-            x = x.view((x.size()[0], -1))
-        elif self.encoder_type == "MAX" or self.encoder_type == "TAP":
+        if self.encoder_type == "MAX" or self.encoder_type == "TAP":
             x = self.encoder(x)
             x = x.view((x.size()[0], -1))
         elif self.encoder_type == "SAP":

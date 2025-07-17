@@ -1,153 +1,96 @@
+#! /usr/bin/python
 # -*- encoding: utf-8 -*-
 
 import torch
+import torchaudio
 import torch.nn as nn
-from asteroid_filterbanks import Encoder, ParamSincFB
+import torch.nn.functional as F
+from torch.nn import Parameter
 
-from models.RawNetBasicBlock import Bottle2neck, PreEmphasis
+class MainModel(nn.Module):
+    def __init__(self, nOut = 1024, encoder_type='SAP', log_input=True, **kwargs):
+        super(MainModel, self).__init__();
 
+        print('Embedding size is %d, encoder %s.'%(nOut, encoder_type))
+        
+        self.encoder_type = encoder_type
+        self.log_input    = log_input
 
-class RawNet3(nn.Module):
-    def __init__(self, block, model_scale, context, summed, C=1024, disable_adapter=False, **kwargs):
-        super().__init__()
+        self.netcnn = nn.Sequential(
+            nn.Conv2d(1, 96, kernel_size=(5,7), stride=(1,2), padding=(2,2)),
+            nn.BatchNorm2d(96),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=(1,3), stride=(1,2)),
 
-        nOut = kwargs["nOut"]
+            nn.Conv2d(96, 256, kernel_size=(5,5), stride=(2,2), padding=(1,1)),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=(3,3), stride=(2,2)),
 
-        self.context = context
-        self.encoder_type = kwargs["encoder_type"]
-        self.log_sinc = kwargs["log_sinc"]
-        self.norm_sinc = kwargs["norm_sinc"]
-        self.out_bn = kwargs["out_bn"]
-        self.summed = summed
-        self.disable_adapter = disable_adapter
+            nn.Conv2d(256, 384, kernel_size=(3,3), padding=(1,1)),
+            nn.BatchNorm2d(384),
+            nn.ReLU(inplace=True),
 
-        self.preprocess = nn.Sequential(
-            PreEmphasis(), nn.InstanceNorm1d(1, eps=1e-4, affine=True)
-        )
-        self.conv1 = Encoder(
-            ParamSincFB(
-                C // 4,
-                251,
-                stride=kwargs["sinc_stride"],
-            )
-        )
-        self.relu = nn.ReLU()
-        self.bn1 = nn.BatchNorm1d(C // 4)
+            nn.Conv2d(384, 256, kernel_size=(3,3), padding=(1,1)),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
 
-        self.layer1 = block(
-            C // 4, C, kernel_size=3, dilation=2, scale=model_scale, pool=5
-        )
-        self.layer2 = block(
-            C, C, kernel_size=3, dilation=3, scale=model_scale, pool=3
-        )
-        self.layer3 = block(C, C, kernel_size=3, dilation=4, scale=model_scale)
-        self.layer4 = nn.Conv1d(3 * C, 1536, kernel_size=1)
+            nn.Conv2d(256, 256, kernel_size=(3,3), padding=(1,1)),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=(3,3), stride=(2,2)),
 
-        if self.disable_adapter:
-            print("Adapter disabled - using global average pooling")
+            nn.Conv2d(256, 512, kernel_size=(4,1), padding=(0,0)),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            
+        );
+
+        if self.encoder_type == "MAX":
+            self.encoder = nn.AdaptiveMaxPool2d((1,1))
+            out_dim = 512
+        elif self.encoder_type == "TAP":
+            self.encoder = nn.AdaptiveAvgPool2d((1,1))
+            out_dim = 512
+        elif self.encoder_type == "SAP":
+            self.sap_linear = nn.Linear(512, 512)
+            self.attention = self.new_parameter(512, 1)
+            out_dim = 512
         else:
-            if self.context:
-                attn_input = 1536 * 3
-            else:
-                attn_input = 1536
-            print("self.encoder_type", self.encoder_type)
-            if self.encoder_type == "ECA":
-                attn_output = 1536
-            elif self.encoder_type == "ASP":
-                attn_output = 1
-            else:
-                raise ValueError("Undefined encoder")
+            raise ValueError('Undefined encoder')
 
-            self.attention = nn.Sequential(
-                nn.Conv1d(attn_input, 128, kernel_size=1),
-                nn.ReLU(),
-                nn.BatchNorm1d(128),
-                nn.Conv1d(128, attn_output, kernel_size=1),
-                nn.Softmax(dim=2),
-            )
+        self.fc = nn.Linear(out_dim, nOut)
 
-        self.bn5 = nn.BatchNorm1d(3072)
+        self.instancenorm   = nn.InstanceNorm1d(40)
+        self.torchfb        = torchaudio.transforms.MelSpectrogram(sample_rate=16000, n_fft=512, win_length=400, hop_length=160, f_min=0.0, f_max=8000, pad=0, n_mels=40)
 
-        self.fc6 = nn.Linear(3072, nOut)
-        self.bn6 = nn.BatchNorm1d(nOut)
-
-        self.mp3 = nn.MaxPool1d(3)
-
+    def new_parameter(self, *size):
+        out = nn.Parameter(torch.FloatTensor(*size))
+        nn.init.xavier_normal_(out)
+        return out
+        
     def forward(self, x):
-        """
-        :param x: input mini-batch (bs, samp)
-        """
 
-        with torch.cuda.amp.autocast(enabled=False):
-            x = self.preprocess(x)
-            x = torch.abs(self.conv1(x))
-            if self.log_sinc:
-                x = torch.log(x + 1e-6)
-            if self.norm_sinc == "mean":
-                x = x - torch.mean(x, dim=-1, keepdim=True)
-            elif self.norm_sinc == "mean_std":
-                m = torch.mean(x, dim=-1, keepdim=True)
-                s = torch.std(x, dim=-1, keepdim=True)
-                s[s < 0.001] = 0.001
-                x = (x - m) / s
+        with torch.no_grad():
+            with torch.cuda.amp.autocast(enabled=False):
+                x = self.torchfb(x)+1e-6
+                if self.log_input: x = x.log()
+                x = self.instancenorm(x).unsqueeze(1)
 
-        if self.summed:
-            x1 = self.layer1(x)
-            x2 = self.layer2(x1)
-            x3 = self.layer3(self.mp3(x1) + x2)
-        else:
-            x1 = self.layer1(x)
-            x2 = self.layer2(x1)
-            x3 = self.layer3(x2)
+        x = self.netcnn(x);
 
-        x = self.layer4(torch.cat((self.mp3(x1), x2, x3), dim=1))
-        x = self.relu(x)
+        if self.encoder_type == "MAX" or self.encoder_type == "TAP":
+            x = self.encoder(x)
+            x = x.view((x.size()[0], -1))
 
-        t = x.size()[-1]
+        elif self.encoder_type == "SAP":
+            x = x.permute(0, 2, 1, 3)
+            x = x.squeeze(dim=1).permute(0, 2, 1)  # batch * L * D
+            h = torch.tanh(self.sap_linear(x))
+            w = torch.matmul(h, self.attention).squeeze(dim=2)
+            w = F.softmax(w, dim=1).view(x.size(0), x.size(1), 1)
+            x = torch.sum(x * w, dim=1)
 
-        if self.disable_adapter:
-            # Simple global average and standard deviation pooling
-            mu = torch.mean(x, dim=2)
-            sg = torch.sqrt(torch.var(x, dim=2).clamp(min=1e-4, max=1e4))
-            x = torch.cat((mu, sg), 1)
-        else:
-            if self.context:
-                global_x = torch.cat(
-                    (
-                        x,
-                        torch.mean(x, dim=2, keepdim=True).repeat(1, 1, t),
-                        torch.sqrt(
-                            torch.var(x, dim=2, keepdim=True).clamp(
-                                min=1e-4, max=1e4
-                            )
-                        ).repeat(1, 1, t),
-                    ),
-                    dim=1,
-                )
-            else:
-                global_x = x
+        x = self.fc(x);
 
-            w = self.attention(global_x)
-
-            mu = torch.sum(x * w, dim=2)
-            sg = torch.sqrt(
-                (torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-4, max=1e4)
-            )
-
-            x = torch.cat((mu, sg), 1)
-
-        x = self.bn5(x)
-
-        x = self.fc6(x)
-
-        if self.out_bn:
-            x = self.bn6(x)
-
-        return x
-
-
-def MainModel(disable_adapter=False, **kwargs):
-    model = RawNet3(
-        Bottle2neck, model_scale=8, context=True, summed=True, out_bn=False, log_sinc=True, norm_sinc="mean", grad_mult=1, disable_adapter=disable_adapter, **kwargs
-    )
-    return model
+        return x;

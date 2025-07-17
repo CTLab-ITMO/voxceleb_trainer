@@ -58,6 +58,7 @@ parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number
 parser.add_argument('--dcf_p_target',   type=float, default=0.05,   help='A priori probability of the specified target speaker')
 parser.add_argument('--dcf_c_miss',     type=float, default=1,      help='Cost of a missed detection')
 parser.add_argument('--dcf_c_fa',       type=float, default=1,      help='Cost of a spurious detection')
+parser.add_argument('--num_eval',       type=int,   default=10,     help='Number of evaluation segments per utterance')
 
 ## Load and save
 parser.add_argument('--initial_model',  type=str,   default="",     help='Initial model weights')

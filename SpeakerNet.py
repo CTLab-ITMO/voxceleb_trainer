@@ -24,14 +24,21 @@ class WrappedModel(nn.Module):
 
 
 class SpeakerNet(nn.Module):
-    def __init__(self, model, optimizer, trainfunc, nPerSpeaker, **kwargs):
+    def __init__(self, model, optimizer, trainfunc, nPerSpeaker, disable_adapter=False, **kwargs):
         super(SpeakerNet, self).__init__()
 
         SpeakerNetModel = importlib.import_module("models." + model).__getattribute__("MainModel")
         self.__S__ = SpeakerNetModel(**kwargs)
 
-        LossFunction = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")
-        self.__L__ = LossFunction(**kwargs)
+        self.disable_adapter = disable_adapter
+        
+        if not disable_adapter:
+            LossFunction = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")
+            self.__L__ = LossFunction(**kwargs)
+            print(f"Adapter (Loss Function) enabled: {trainfunc}")
+        else:
+            self.__L__ = None
+            print("Adapter (Loss Function) disabled - using simple cosine similarity")
 
         self.nPerSpeaker = nPerSpeaker
 
@@ -44,12 +51,31 @@ class SpeakerNet(nn.Module):
             return outp
 
         else:
-
             outp = outp.reshape(self.nPerSpeaker, -1, outp.size()[-1]).transpose(1, 0).squeeze(1)
 
-            nloss, prec1 = self.__L__.forward(outp, label)
-
-            return nloss, prec1
+            if not self.disable_adapter:
+                nloss, prec1 = self.__L__.forward(outp, label)
+                return nloss, prec1
+            else:
+                # Simple cosine similarity loss
+                # Normalize embeddings
+                outp_norm = F.normalize(outp, p=2, dim=1)
+                
+                # Compute cosine similarity matrix
+                sim_matrix = torch.mm(outp_norm, outp_norm.t())
+                
+                # Create target matrix (1 for same speaker, 0 for different)
+                batch_size = outp.size(0)
+                target = torch.eye(batch_size).cuda()
+                
+                # Simple MSE loss between similarity matrix and target
+                nloss = F.mse_loss(sim_matrix, target)
+                
+                # Compute accuracy (percentage of correct predictions)
+                pred = (sim_matrix > 0.5).float()
+                prec1 = (pred == target).float().mean() * 100
+                
+                return nloss, prec1
 
 
 class ModelTrainer(object):
@@ -211,7 +237,7 @@ class ModelTrainer(object):
                 ref_feat = feats[data[1]].cuda()
                 com_feat = feats[data[2]].cuda()
 
-                if self.__model__.module.__L__.test_normalize:
+                if self.__model__.module.__L__ is None or self.__model__.module.__L__.test_normalize:
                     ref_feat = F.normalize(ref_feat, p=2, dim=1)
                     com_feat = F.normalize(com_feat, p=2, dim=1)
 
