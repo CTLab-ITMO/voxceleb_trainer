@@ -1,3 +1,10 @@
+# ITMO Lera
+common_voice/
+other.tsv
+baseline_lite_ap.model
+model000000040.model
+
+
 # Other files
 *.model
 *.wav

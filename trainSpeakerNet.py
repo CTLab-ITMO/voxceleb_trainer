@@ -36,7 +36,7 @@ parser.add_argument('--seed',           type=int,   default=10,     help='Seed f
 ## Training details
 parser.add_argument('--test_interval',  type=int,   default=10,     help='Test and save every [test_interval] epochs')
 parser.add_argument('--max_epoch',      type=int,   default=500,    help='Maximum number of epochs')
-parser.add_argument('--trainfunc',      type=str,   default="",     help='Loss function')
+parser.add_argument('--trainfunc',      type=str,   default="amsoftmax",     help='Loss function')
 
 ## Optimizer
 parser.add_argument('--optimizer',      type=str,   default="adam", help='sgd or adam')
@@ -63,10 +63,10 @@ parser.add_argument('--initial_model',  type=str,   default="",     help='Initia
 parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='Path for model and logs')
 
 ## Training and test data
-parser.add_argument('--train_list',     type=str,   default="data/train_list.txt",  help='Train list')
-parser.add_argument('--test_list',      type=str,   default="data/test_list.txt",   help='Evaluation list')
-parser.add_argument('--train_path',     type=str,   default="data/voxceleb2", help='Absolute path to the train set')
-parser.add_argument('--test_path',      type=str,   default="data/voxceleb1", help='Absolute path to the test set')
+parser.add_argument('--train_list',     type=str,   default="common_voice/train_list.txt",  help='Train list')
+parser.add_argument('--test_list',      type=str,   default="common_voice/test_list.txt",   help='Evaluation list')
+parser.add_argument('--train_path',     type=str,   default="common_voice/common_voice_wav", help='Absolute path to the train set')
+parser.add_argument('--test_path',      type=str,   default="common_voice/common_voice_wav", help='Absolute path to the test set')
 parser.add_argument('--musan_path',     type=str,   default="data/musan_split", help='Absolute path to the test set')
 parser.add_argument('--rir_path',       type=str,   default="data/RIRS_NOISES/simulated_rirs", help='Absolute path to the test set')
 
