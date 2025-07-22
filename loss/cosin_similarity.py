@@ -11,10 +11,16 @@ from utils import accuracy
 class LossFunction(nn.Module):
     def __init__(self, **kwargs):
         super(LossFunction, self).__init__()
-
+        self.test_normalize = True
+        self.nPerSpeaker = None
         print('Initialised Cosin Similarity Loss')
 
     def forward(self, outp, label=None):
+        # Гарантируем 3D-тензор
+        if outp.dim() == 2:
+            outp = outp.unsqueeze(1)  # [batch, 1, emb_dim], если nPerSpeaker=1
+        self.nPerSpeaker = outp.size(1)
+
         # Нормализация эмбеддингов
         outp_norm = F.normalize(outp, p=2, dim=-1)
 
@@ -33,27 +39,26 @@ class LossFunction(nn.Module):
 
         # 3. Расчет accuracy
         with torch.no_grad():
-            matrix_mask = torch.eye(inter_sim.size(0), device=inter_sim.device).bool() # Маска, чтобы исключить из подсчета точности сравнение с самим собой (диаг.)
-
             # Для внутригрупповой accuracy
             intra_pred = (intra_sim > 0.5).float() # Если больше 0.5, считаем, что элементы признаны равными
             intra_correct = (intra_pred == intra_target).float()
-            intra_acc = (intra_correct[~matrix_mask].mean() * 100).item()
+            intra_acc = intra_correct.mean() * 100
 
             # Для межгрупповой accuracy
             inter_pred = (inter_sim > 0.5).float()
             inter_correct = (inter_pred == inter_target).float()
-            inter_acc = (inter_correct[~matrix_mask].mean() * 100).item()
+            inter_acc = inter_correct.mean() * 100
+
+            '''
+            Коэффициенты, учитывающие долю внутренней и внешней точности
+            Позже будут введены, пока что будем учитывать только межгрупповую accuracy
+            '''
+            intra_coef = 0
+            inter_coef = 1
 
             # Общая accuracy (взвешенное среднее)
-            total_acc = (intra_acc * self.nPerSpeaker + inter_acc * (inter_sim.size(0) - 1)) / \
-                        (self.nPerSpeaker + inter_sim.size(0) - 1)
-
-            '''
-            Для intra_acc: каждый спикер вносит nPerSpeaker сравнений (все попарные комбинации его отрезков)
-            Для inter_acc: каждый спикер сравнивается с (batch_size - 1) другими спикерами (inter_sim.size(0) = batch_size)
-            Знаменатель - для нормализации
-            '''
+            total_acc = (intra_acc * intra_coef + inter_acc * inter_coef) / \
+                        (intra_coef + inter_coef)
 
         # Комбинированный лосс
         total_loss = intra_loss + inter_loss

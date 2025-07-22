@@ -2,8 +2,8 @@
 common_voice/
 .idea/
 other.tsv
-baseline_lite_ap.model
-model000000040.model
+models_for_test/
+exps_old/
 
 
 # Other files
