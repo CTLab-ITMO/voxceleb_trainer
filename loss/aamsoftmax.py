@@ -7,13 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time, pdb, numpy, math
 from utils import accuracy
+import os
 
 class LossFunction(nn.Module):
     def __init__(self, nOut, nClasses, margin=0.3, scale=15, easy_margin=False, **kwargs):
         super(LossFunction, self).__init__()
-
         self.test_normalize = True
-        
         self.m = margin
         self.s = scale
         self.in_feats = nOut

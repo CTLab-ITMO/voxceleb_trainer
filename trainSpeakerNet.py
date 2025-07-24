@@ -51,7 +51,6 @@ parser.add_argument("--hard_rank",      type=int,   default=10,     help='Hard n
 parser.add_argument('--margin',         type=float, default=0.1,    help='Loss margin, only for some loss functions')
 parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions')
 parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses')
-parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number of speakers in the softmax layer, only for softmax-based losses')
 
 ## Evaluation parameters
 parser.add_argument('--dcf_p_target',   type=float, default=0.05,   help='A priori probability of the specified target speaker')
@@ -62,8 +61,18 @@ parser.add_argument('--dcf_c_fa',       type=float, default=1,      help='Cost o
 parser.add_argument('--initial_model',  type=str,   default="",     help='Initial model weights')
 parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='Path for model and logs')
 
+# Подсчет числа классов (уникальных спикеров)
+train_path = "common_voice/train_list.txt"
+unique_speakers = set()
+with open(train_path, 'r') as file:
+    for line in file:
+        speaker_id = line.strip().split()[0]
+        unique_speakers.add(speaker_id)
+#print("Num of speakers (train): ", len(unique_speakers))
+parser.add_argument('--nClasses',       type=int,   default=len(unique_speakers),   help='Number of speakers in the softmax layer, only for softmax-based losses')
+
 ## Training and test data
-parser.add_argument('--train_list',     type=str,   default="common_voice/train_list.txt",  help='Train list')
+parser.add_argument('--train_list',     type=str,   default=train_path,  help='Train list')
 parser.add_argument('--test_list',      type=str,   default="common_voice/test_list.txt",   help='Evaluation list')
 parser.add_argument('--train_path',     type=str,   default="common_voice/common_voice_wav", help='Absolute path to the train set')
 parser.add_argument('--test_path',      type=str,   default="common_voice/common_voice_wav", help='Absolute path to the test set')
@@ -161,7 +170,7 @@ def main_worker(gpu, ngpus_per_node, args):
     modelfiles = glob.glob('%s/model0*.model'%args.model_save_path)
     modelfiles.sort()
 
-    if(args.initial_model != ""):
+    if (args.initial_model != ""):
         trainer.loadParameters(args.initial_model)
         print("Model {} loaded!".format(args.initial_model))
     elif len(modelfiles) >= 1:
