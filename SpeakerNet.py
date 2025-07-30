@@ -37,8 +37,10 @@ class SpeakerNet(nn.Module):
             self.__L__ = LossFunction(**kwargs)
             print(f"Adapter (Loss Function) enabled: {trainfunc}")
         else:
-            self.__L__ = None
-            print("Adapter (Loss Function) disabled - using simple cosine similarity")
+            # Use simple cosine similarity loss when adapter is disabled
+            LossFunction = importlib.import_module("loss.cosine").__getattribute__("LossFunction")
+            self.__L__ = LossFunction(**kwargs)
+            print("Adapter (Loss Function) disabled - using cosine similarity loss")
 
         self.nPerSpeaker = nPerSpeaker
 
@@ -52,30 +54,8 @@ class SpeakerNet(nn.Module):
 
         else:
             outp = outp.reshape(self.nPerSpeaker, -1, outp.size()[-1]).transpose(1, 0).squeeze(1)
-
-            if not self.disable_adapter:
-                nloss, prec1 = self.__L__.forward(outp, label)
-                return nloss, prec1
-            else:
-                # Simple cosine similarity loss
-                # Normalize embeddings
-                outp_norm = F.normalize(outp, p=2, dim=1)
-                
-                # Compute cosine similarity matrix
-                sim_matrix = torch.mm(outp_norm, outp_norm.t())
-                
-                # Create target matrix (1 for same speaker, 0 for different)
-                batch_size = outp.size(0)
-                target = torch.eye(batch_size).cuda()
-                
-                # Simple MSE loss between similarity matrix and target
-                nloss = F.mse_loss(sim_matrix, target)
-                
-                # Compute accuracy (percentage of correct predictions)
-                pred = (sim_matrix > 0.5).float()
-                prec1 = (pred == target).float().mean() * 100
-                
-                return nloss, prec1
+            nloss, prec1 = self.__L__.forward(outp, label)
+            return nloss, prec1
 
 
 class ModelTrainer(object):

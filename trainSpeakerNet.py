@@ -199,7 +199,7 @@ def main_worker(gpu, ngpus_per_node, args):
             
             files = list(set(files))  
             
-            vis_dataset = test_dataset_loader(files, args.test_path, num_eval=args.num_eval, **vars(args))
+            vis_dataset = test_dataset_loader(files, args.test_path, eval_frames=args.eval_frames, num_eval=args.num_eval)
             vis_loader = torch.utils.data.DataLoader(vis_dataset, batch_size=1, shuffle=False, num_workers=args.nDataLoaderThread)
             
             viz_save_path = os.path.join(args.result_save_path, "embeddings_visualization")
@@ -208,7 +208,9 @@ def main_worker(gpu, ngpus_per_node, args):
             adapter_suffix = " (without adapter)" if args.disable_adapter else " (with adapter)"
             
             visualizer.visualize_embeddings(s, vis_loader, num_speakers=10, title_suffix=adapter_suffix)
-        
+            
+            print(f"Visualization plots saved to: {viz_save_path}")
+            
         sc, lab, _ = trainer.evaluateFromList(**vars(args))
 
         if args.gpu == 0:

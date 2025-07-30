@@ -121,5 +121,7 @@ venv.bak/
 /data2
 *.md
 test_adapter_comparison.py
-embedding_visualizer.py
 run
+/data3
+example_verification_list.txt
+loss/cosine2.py

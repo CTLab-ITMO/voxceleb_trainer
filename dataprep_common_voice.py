@@ -184,7 +184,7 @@ if __name__ == "__main__":
     parser.add_argument('--extract', dest='extract', action='store_true', help='Enable extract')
     parser.add_argument('--convert', dest='convert', action='store_true', help='Enable convert and organize')
     parser.add_argument('--create_lists', dest='create_lists', action='store_true', help='Enable creation of train/test lists')
-    parser.add_argument('--num_trials', type=int, default=10, help='Number of verification trials to generate')
+    parser.add_argument('--num_trials', type=int, default=100, help='Number of verification trials to generate')
 
     args = parser.parse_args()
 
