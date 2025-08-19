@@ -12,6 +12,7 @@ from zipfile import ZipFile
 import hashlib
 from itertools import combinations
 from collections import defaultdict
+import soundfile as sf
 
 def is_within_directory(directory, target):
     abs_directory = os.path.abspath(directory)
@@ -102,24 +103,38 @@ def convert_and_organize(extracted_path, save_path, tsv_filename='other.tsv'):
         for original_id, short_id in speaker_mapping.items():
             f.write(f"{original_id}\t{short_id}\n")
 
-
-def create_lists(save_path, train_split=0.9):
+def create_lists(save_path, train_split=0.9, len_train_speakers=0, len_test_speakers=0, min_seg_per_spk=0, min_frames=600, min_eval_frames=300):
     print("Creating train and test lists...")
     wav_path = os.path.join(save_path, 'common_voice_wav')
     speakers = [spk for spk in os.listdir(wav_path) if os.path.isdir(os.path.join(wav_path, spk))]
-    X = int(len(speakers) * (1 - train_split)) # Это размер тестовой выборки по количеству спикеров
+    if len_test_speakers == 0: # Если отдельное ограничение по числу тестовых спикеров не задано...
+        len_test_speakers = int(len(speakers) * (1 - train_split))  # Берем по заданному разбиению
 
-    # Собираем статистику по спикерам и группируем по количеству файлов
-    speaker_stats = defaultdict(list)
-    for speaker in speakers:
-        speaker_dir = os.path.join(wav_path, speaker)
-        wav_files = [f for f in os.listdir(speaker_dir) if f.endswith('.wav')]
-        num_files = len(wav_files)
-        speaker_stats[num_files].append(speaker)
+    def get_stats(min_frames): # Собираем статистику по спикерам и группируем по количеству файлов
+        speaker_stats = defaultdict(list)
+        speaker_segs = defaultdict(list)
+        for speaker in speakers:
+            speaker_dir = os.path.join(wav_path, speaker)
+            wav_files = [f for f in os.listdir(speaker_dir) if f.endswith('.wav')]
 
-    # Сортируем ключи (количество файлов) по возрастанию
-    sorted_file_counts = sorted(speaker_stats.keys())
-    #print(sorted_file_counts)
+            # ФИЛЬТРУЕМ файлы по длине
+            valid_files = []
+            for wav_file in wav_files:
+                file_path = os.path.join(speaker_dir, wav_file)
+                audio, sr = sf.read(file_path)
+                # Проверяем, что файл не короче eval_frames
+                if len(audio) >= min_frames * 160 + 240:
+                    valid_files.append(wav_file)
+                    speaker_segs[speaker].append(wav_file)
+
+            num_files = len(valid_files)
+            speaker_stats[num_files].append(speaker)
+        # Сортируем ключи (количество файлов) по возрастанию
+        sorted_file_counts = sorted(speaker_stats.keys())
+        return speaker_stats, speaker_segs, sorted_file_counts
+
+    train_speaker_stats, train_speaker_segs, train_sorted_file_counts = get_stats(min_frames) # Допускаются файлы не короче указанного значения
+    test_speaker_stats, test_speaker_segs, test_sorted_file_counts = get_stats(min_eval_frames)
 
     '''
     Формируем test_speakers, начиная со спикеров, у которых 2 файла
@@ -134,33 +149,55 @@ def create_lists(save_path, train_split=0.9):
     test_speakers = []
     current_file_count = 2  # Начинаем с 2 файлов
 
-    while len(test_speakers) < X and current_file_count <= max(sorted_file_counts):
-        if current_file_count in speaker_stats:
+    while len(test_speakers) < len_test_speakers and current_file_count <= max(test_sorted_file_counts):
+        if current_file_count in test_speaker_stats:
             # Берем всех спикеров с current_file_count файлами
-            available_speakers = speaker_stats[current_file_count]
-            needed = X - len(test_speakers)
-
-            # Добавляем либо всех доступных, либо столько сколько нужно
+            available_speakers = test_speaker_stats[current_file_count]
+            needed = len_test_speakers - len(test_speakers)
+            # Добавляем либо всех доступных, либо столько, сколько нужно
             test_speakers.extend(available_speakers[:needed])
 
         current_file_count += 1
 
     # Формируем train_speakers (все остальные)
-    train_speakers = [spk for spk in speakers if spk not in test_speakers]
-    # Перемешиваем train_speakers
-    random.shuffle(train_speakers)
-    other_speakers = test_speakers
-    random.shuffle(other_speakers)  # Перемешиваем для случайного выбора
-    used_negative_elems = set()  # Для отслеживания использованных элементов в отрицательных парах
+    if len_train_speakers == 0:
+        train_speakers = [spk for spk in speakers if spk not in test_speakers] # Если ограничения на число спикеров нет, берем всех
+    else: # Если есть ограничение, начинаем с наибольшего количества записей для каждого спикера
+        current_file_count = max(train_sorted_file_counts)
+        train_speakers = []
+        while len(train_speakers) < len_train_speakers and current_file_count > min_seg_per_spk: # Число записей каждого спикера не меньше заданного
+            if current_file_count in train_speaker_stats:
+                available_speakers = train_speaker_stats[current_file_count]
+                available_speakers = [spk for spk in available_speakers if spk not in test_speakers]
+                needed = len_train_speakers - len(train_speakers)
+
+                # Добавляем либо всех доступных, либо столько, сколько нужно
+                train_speakers.extend(available_speakers[:needed])
+
+            current_file_count -= 1
 
     print(f"Total speakers: {len(speakers)}")
     print(f"Test speakers {len(test_speakers)}")
     print(f"Train speakers {len(train_speakers)}")
 
-    with open(os.path.join(save_path, 'test_list.txt'), 'w') as test_file:
+    # Формируем файлы-списки
+    test_file_name, train_file_name = f'test_list_{len(test_speakers)}', f'train_list_{len(train_speakers)}'
+    if min_seg_per_spk > 0:
+        train_file_name += f'_min_seg_{min_seg_per_spk}'
+    if min_frames > 0:
+        train_file_name += f'_min_frames_{min_frames}'
+    if min_eval_frames > 0:
+        test_file_name += f'_min_frames_{min_eval_frames}'
+    test_file_name += '.txt'
+    train_file_name += '.txt'
+
+    # Формируем test_list.txt
+    other_speakers = test_speakers
+    random.shuffle(other_speakers)  # Перемешиваем для случайного выбора
+    used_negative_elems = set()  # Для отслеживания использованных элементов в отрицательных парах
+    with open(os.path.join(save_path, test_file_name), 'w') as test_file:
         for speaker in test_speakers:
-            speaker_dir = os.path.join(wav_path, speaker)
-            wav_files = [f for f in os.listdir(speaker_dir) if f.endswith('.wav')]
+            wav_files = test_speaker_segs[speaker]
 
             # Положительный пример (1)
             pos_line = f"1 {speaker}/{wav_files[0]} {speaker}/{wav_files[1]}\n"
@@ -172,10 +209,7 @@ def create_lists(save_path, train_split=0.9):
                 if other_spk == speaker:
                     continue
 
-                other_dir = os.path.join(wav_path, other_spk)
-                other_files = [f for f in os.listdir(other_dir)
-                               if f.endswith('.wav') and
-                               f not in used_negative_elems]
+                other_files = test_speaker_segs[other_spk]
 
                 if other_files:
                     other_wav = random.choice(other_files)
@@ -186,11 +220,11 @@ def create_lists(save_path, train_split=0.9):
                     neg_line = f"0 {speaker}/{wav_files[0]} {other_spk}/{other_wav}\n"
                     test_file.write(neg_line)
 
-    # Формируем train_list.txt (исключая тестовых спикеров)
-    with open(os.path.join(save_path, 'train_list.txt'), 'w') as train_file:
+    # Формируем train_list.txt (из трейн-спикеров)
+    random.shuffle(train_speakers)
+    with open(os.path.join(save_path, train_file_name), 'w') as train_file:
         for speaker in tqdm(train_speakers):
-            speaker_dir = os.path.join(wav_path, speaker)
-            for wav_file in os.listdir(speaker_dir):
+            for wav_file in train_speaker_segs[speaker]:
                 if wav_file.endswith('.wav'):
                     train_file.write(f"{speaker} {speaker}/{wav_file}\n")
 
@@ -202,6 +236,11 @@ if __name__ == "__main__":
     parser.add_argument('--extract', dest='extract', action='store_true', help='Enable extract')
     parser.add_argument('--convert', dest='convert', action='store_true', help='Enable convert and organize')
     parser.add_argument('--create_lists', dest='create_lists', action='store_true', help='Enable creation of train/test lists')
+    parser.add_argument('--len_train_speakers', type=int, default=0, help='Num of train speakers for Common Voice')
+    parser.add_argument('--len_test_speakers', type=int, default=0, help='Num of test speakers for Common Voice')
+    parser.add_argument('--min_seg_per_spk', type=int, default=0, help='Min num of segments per speaker for Common Voice')
+    parser.add_argument('--min_frames', type=int, default=0, help='Min num of frames in train set for Common Voice')
+    parser.add_argument('--min_eval_frames', type=int, default=0, help='Min num of frames in test set for Common Voice')
 
     args = parser.parse_args()
 
@@ -215,4 +254,5 @@ if __name__ == "__main__":
         convert_and_organize(extracted_path, args.save_path)
 
     if args.create_lists:
-        create_lists(args.save_path)
+        create_lists(args.save_path, len_train_speakers=args.len_train_speakers, len_test_speakers=args.len_test_speakers,
+                     min_seg_per_spk=args.min_seg_per_spk, min_frames=args.min_frames, min_eval_frames=args.min_eval_frames)

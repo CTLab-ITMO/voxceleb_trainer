@@ -26,6 +26,11 @@ def main():
     parser.add_argument('--extract', dest='extract', action='store_true', help='Enable extract')
     parser.add_argument('--convert', dest='convert', action='store_true', help='Enable convert')
     parser.add_argument('--create_lists', dest='create_lists', action='store_true', help='Enable list creation for Common Voice')
+    parser.add_argument('--len_train_speakers', type=int, default=0, help='Num of train speakers for Common Voice')
+    parser.add_argument('--len_test_speakers', type=int, default=0, help='Num of test speakers for Common Voice')
+    parser.add_argument('--min_seg_per_spk', type=int, default=0, help='Min num of segments per speaker for Common Voice')
+    parser.add_argument('--min_frames', type=int, default=0, help='Min num of frames in train set for Common Voice')
+    parser.add_argument('--min_eval_frames', type=int, default=0, help='Min num of frames in test set for Common Voice')
 
     args = parser.parse_args()
 
@@ -60,6 +65,11 @@ def main():
         if args.extract: command.append('--extract')
         if args.convert: command.append('--convert')
         if args.create_lists: command.append('--create_lists')
+        if args.len_train_speakers: command.extend(['--len_train_speakers', str(args.len_train_speakers)])
+        if args.len_test_speakers: command.extend(['--len_test_speakers', str(args.len_test_speakers)])
+        if args.min_seg_per_spk: command.extend(['--min_seg_per_spk', str(args.min_seg_per_spk)])
+        if args.min_frames: command.extend(['--min_frames', str(args.min_frames)])
+        if args.min_eval_frames: command.extend(['--min_eval_frames', str(args.min_eval_frames)])
 
         subprocess.run(command, check=True)
 
