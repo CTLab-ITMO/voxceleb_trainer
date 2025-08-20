@@ -14,6 +14,7 @@ from SpeakerNet import *
 from DatasetLoader import *
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from itertools import combinations
 warnings.simplefilter("ignore")
 
 ## ===== ===== ===== ===== ===== ===== ===== =====
@@ -32,9 +33,10 @@ parser.add_argument('--max_seg_per_spk', type=int,  default=10,    help='Maximum
 parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number of loader threads')
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator')
+parser.add_argument('--combinations', action='store_true', help='Enable combination sampling')
 
 ## Training details
-parser.add_argument('--test_interval',  type=int,   default=2,     help='Test and save every [test_interval] epochs')
+parser.add_argument('--test_interval',  type=int,   default=1,     help='Test and save every [test_interval] epochs')
 parser.add_argument('--max_epoch',      type=int,   default=500,    help='Maximum number of epochs')
 parser.add_argument('--trainfunc',      type=str,   default="cosin_similarity",     help='Loss function')
 
@@ -119,6 +121,48 @@ if args.config is not None:
 ## Trainer script
 ## ===== ===== ===== ===== ===== ===== ===== =====
 
+class CombinationSampler(torch.utils.data.Sampler):
+    def __init__(self, base_sampler, batch_size):
+        self.base_sampler = base_sampler
+        self.batch_size = batch_size
+        self.epoch = 0
+
+        base_iterator = iter(self.base_sampler)
+        self.all_groups = list(base_iterator)  # Получаем все группы из базового семплера
+        self.num_groups = len(self.all_groups)
+
+        # Генерируем ВСЕ возможные комбинации батчей
+        self.all_batch_combinations = list(combinations(range(self.num_groups), batch_size))
+        random.shuffle(self.all_batch_combinations)  # Перемешиваем комбинации
+
+    def set_epoch(self, epoch: int) -> None:
+        """Передаем вызов базовому семплеру"""
+        self.epoch = epoch
+        self.base_sampler.set_epoch(epoch)
+
+    def __iter__(self):
+        print(f"Всего групп: {len(self.all_groups)}")
+        print(f"Всего комбинаций: {len(self.all_batch_combinations)}")
+
+        # Тестовый вывод
+        for i, combo in enumerate(self.all_batch_combinations[:5]):  # Первые 5 батчей
+            batch = [self.all_groups[idx] for idx in combo]
+            print(f"Батч {i}: {combo} -> {batch}")
+
+        # Возвращаем итератор по всем комбинациям
+        for combo in self.all_batch_combinations:
+            # "Распаковываем" группы в плоский список индексов
+            flat_batch = []
+            for group_idx in combo:
+                flat_batch.extend(self.all_groups[group_idx])  # ← РАСПАКОВКА!
+            yield flat_batch  # ← плоский список индексов
+
+    def __len__(self):
+        return len(self.all_batch_combinations)
+
+
+
+
 def main_worker(gpu, ngpus_per_node, args):
 
     args.gpu = gpu
@@ -152,7 +196,14 @@ def main_worker(gpu, ngpus_per_node, args):
     ## Initialise trainer and data loader
     train_dataset = train_dataset_loader(**vars(args))
 
-    train_sampler = train_dataset_sampler(train_dataset, **vars(args))
+    # Базовый семплер
+    base_sampler = train_dataset_sampler(train_dataset, **vars(args))
+
+    # ВЫБОР СЭМПЛЕРА ПО АРГУМЕНТУ
+    if args.combinations:  # Если передан флаг --combinations
+        train_sampler = CombinationSampler(base_sampler, args.batch_size)
+    else:
+        train_sampler = base_sampler  # Оригинальный семплер
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -161,7 +212,7 @@ def main_worker(gpu, ngpus_per_node, args):
         sampler=train_sampler,
         pin_memory=False,
         worker_init_fn=worker_init_fn,
-        drop_last=True,
+        drop_last=not args.combinations,  # ← Меняем drop_last для комбинаций
     )
 
     trainer     = ModelTrainer(s, **vars(args))
