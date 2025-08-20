@@ -103,6 +103,8 @@ class ModelTrainer(object):
 
             label = torch.LongTensor(data_label).cuda()
 
+            # print(f"Processing batch {index // stepsize + 1}/{loader.__len__()}: {data_label}")
+            
             if self.mixedprec:
                 with autocast():
                     nloss, prec1 = self.__model__(data, label)

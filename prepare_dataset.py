@@ -21,11 +21,15 @@ def main():
 
     # Common Voice specific arguments
     parser.add_argument('--archive_path', type=str, help='Path to Common Voice tar.gz archive')
+    parser.add_argument('--max_speakers', type=int, default=None, help='Maximum number of speakers for Common Voice dataset')
+    parser.add_argument('--duration', type=float, default=None, help='Audio duration in seconds for Common Voice (shorter files skipped, longer trimmed)')
+    parser.add_argument('--files_per_speaker', type=int, default=None, help='Exact number of files per speaker (speakers with fewer files excluded, more files limited to this number)')
 
     # Common actions
     parser.add_argument('--extract', dest='extract', action='store_true', help='Enable extract')
     parser.add_argument('--convert', dest='convert', action='store_true', help='Enable convert')
     parser.add_argument('--create_lists', dest='create_lists', action='store_true', help='Enable list creation for Common Voice')
+    parser.add_argument('--num_trials', type=int, default=100, help='Number of verification trials for Common Voice')
 
     args = parser.parse_args()
 
@@ -56,7 +60,15 @@ def main():
             sys.executable, 'dataprep_common_voice.py',
             '--save_path', args.save_path,
             '--archive_path', args.archive_path,
+            '--num_trials', str(args.num_trials),
         ]
+        
+        if args.max_speakers is not None:
+            command.extend(['--max_speakers', str(args.max_speakers)])
+        if args.duration is not None:
+            command.extend(['--duration', str(args.duration)])
+        if args.files_per_speaker is not None:
+            command.extend(['--files_per_speaker', str(args.files_per_speaker)])
         if args.extract: command.append('--extract')
         if args.convert: command.append('--convert')
         if args.create_lists: command.append('--create_lists')
@@ -75,6 +87,13 @@ def main():
         print(f"  --model ResNetSE34V2 \\")
         print(f"  --save_path exps/common_voice_exp \\")
         print(f"  --max_epoch 100")
+        
+        if args.max_speakers:
+            print(f"\nDataset limited to {args.max_speakers} speakers")
+        if args.duration:
+            print(f"Audio duration set to {args.duration} seconds")
+        if args.files_per_speaker:
+            print(f"Files per speaker limited to {args.files_per_speaker}")
         print("="*50)
 
 if __name__ == "__main__":

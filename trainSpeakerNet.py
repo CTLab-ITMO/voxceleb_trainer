@@ -53,6 +53,7 @@ parser.add_argument('--margin',         type=float, default=0.1,    help='Loss m
 parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions')
 parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses')
 parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number of speakers in the softmax layer, only for softmax-based losses')
+parser.add_argument('--eachOther',      dest='eachOther', action='store_true', help='Ensure every speaker is compared with every other speaker in exhaustive pairwise batches')
 
 ## Evaluation parameters
 parser.add_argument('--dcf_p_target',   type=float, default=0.05,   help='A priori probability of the specified target speaker')

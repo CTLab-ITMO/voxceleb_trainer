@@ -184,7 +184,7 @@ class test_dataset_loader(Dataset):
 
 
 class train_dataset_sampler(torch.utils.data.Sampler):
-    def __init__(self, data_source, nPerSpeaker, max_seg_per_spk, batch_size, distributed, seed, **kwargs):
+    def __init__(self, data_source, nPerSpeaker, max_seg_per_spk, batch_size, distributed, seed, eachOther=False, **kwargs):
 
         self.data_label         = data_source.data_label;
         self.nPerSpeaker        = nPerSpeaker;
@@ -193,6 +193,7 @@ class train_dataset_sampler(torch.utils.data.Sampler):
         self.epoch              = 0;
         self.seed               = seed;
         self.distributed        = distributed;
+        self.eachOther          = eachOther;
         
     def __iter__(self):
 
@@ -209,7 +210,6 @@ class train_dataset_sampler(torch.utils.data.Sampler):
                 data_dict[speaker_label] = [];
             data_dict[speaker_label].append(index);
 
-
         ## Group file indices for each class
         dictkeys = list(data_dict.keys());
         dictkeys.sort()
@@ -219,28 +219,69 @@ class train_dataset_sampler(torch.utils.data.Sampler):
         flattened_list = []
         flattened_label = []
         
-        for findex, key in enumerate(dictkeys):
-            data    = data_dict[key]
-            numSeg  = round_down(min(len(data),self.max_seg_per_spk),self.nPerSpeaker)
+        if self.eachOther:
+            import itertools
             
-            rp      = lol(numpy.arange(numSeg),self.nPerSpeaker)
-            flattened_label.extend([findex] * (len(rp)))
-            for indices in rp:
-                flattened_list.append([data[i] for i in indices])
+            if self.batch_size != 2:
+                raise ValueError("eachOther mode requires batch_size=2")
+            
+            speaker_pairs = list(itertools.combinations(range(len(dictkeys)), 2))
+            
+            for pair_idx, (speaker1_idx, speaker2_idx) in enumerate(speaker_pairs):
+                speaker1 = dictkeys[speaker1_idx]
+                speaker2 = dictkeys[speaker2_idx]
+                
+                data1 = data_dict[speaker1]
+                data2 = data_dict[speaker2]
+                
+                numSeg1 = round_down(min(len(data1), self.max_seg_per_spk), self.nPerSpeaker)
+                numSeg2 = round_down(min(len(data2), self.max_seg_per_spk), self.nPerSpeaker)
+                
+                if numSeg1 > 0 and numSeg2 > 0:
+                    # Create segments for speaker 1
+                    rp1 = lol(numpy.arange(numSeg1), self.nPerSpeaker)
+                    # Create segments for speaker 2  
+                    rp2 = lol(numpy.arange(numSeg2), self.nPerSpeaker)
+                    
+                    # Create batches: each batch contains one segment from each speaker
+                    for seg1 in rp1:
+                        for seg2 in rp2:
+                            # Group 1: nPerSpeaker samples from speaker1
+                            group1_indices = [data1[i] for i in seg1]
+                            # Group 2: nPerSpeaker samples from speaker2  
+                            group2_indices = [data2[i] for i in seg2]
+                            
+                            flattened_list.append(group1_indices)
+                            flattened_label.append(speaker1_idx)
+                            
+                            flattened_list.append(group2_indices) 
+                            flattened_label.append(speaker2_idx)
+        else:
+            for findex, key in enumerate(dictkeys):
+                data    = data_dict[key]
+                numSeg  = round_down(min(len(data),self.max_seg_per_spk),self.nPerSpeaker)
+                
+                rp      = lol(numpy.arange(numSeg),self.nPerSpeaker)
+                flattened_label.extend([findex] * (len(rp)))
+                for indices in rp:
+                    flattened_list.append([data[i] for i in indices])
 
-        ## Mix data in random order
-        mixid           = torch.randperm(len(flattened_label), generator=g).tolist()
-        mixlabel        = []
-        mixmap          = []
+        if not self.eachOther:
+            ## Mix data in random order 
+            mixid           = torch.randperm(len(flattened_label), generator=g).tolist()
+            mixlabel        = []
+            mixmap          = []
 
-        ## Prevent two pairs of the same speaker in the same batch
-        for ii in mixid:
-            startbatch = round_down(len(mixlabel), self.batch_size)
-            if flattened_label[ii] not in mixlabel[startbatch:]:
-                mixlabel.append(flattened_label[ii])
-                mixmap.append(ii)
+            ## Prevent two pairs of the same speaker in the same batch
+            for ii in mixid:
+                startbatch = round_down(len(mixlabel), self.batch_size)
+                if flattened_label[ii] not in mixlabel[startbatch:]:
+                    mixlabel.append(flattened_label[ii])
+                    mixmap.append(ii)
 
-        mixed_list = [flattened_list[i] for i in mixmap]
+            mixed_list = [flattened_list[i] for i in mixmap]
+        else:
+            mixed_list = flattened_list
 
         ## Divide data to each GPU
         if self.distributed:

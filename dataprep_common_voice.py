@@ -10,6 +10,7 @@ from tqdm import tqdm
 import random
 from zipfile import ZipFile
 import hashlib
+import json
 
 def is_within_directory(directory, target):
     abs_directory = os.path.abspath(directory)
@@ -38,7 +39,25 @@ def create_short_speaker_id(client_id):
     # Use MD5 hash to create a shorter, consistent identifier
     return hashlib.md5(client_id.encode()).hexdigest()[:16]
 
-def convert_and_organize(extracted_path, save_path, tsv_filename='validated.tsv'):
+def get_audio_duration(file_path):
+    """Get audio duration using ffprobe"""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+            '-of', 'json', file_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            duration = float(data['format']['duration'])
+            return duration
+        else:
+            return None
+    except Exception as e:
+        return None
+
+def convert_and_organize(extracted_path, save_path, tsv_filename='validated.tsv', duration=None):
     tsv_path = None
     for root, dirs, files in os.walk(extracted_path):
         if tsv_filename in files:
@@ -60,9 +79,26 @@ def convert_and_organize(extracted_path, save_path, tsv_filename='validated.tsv'
     speaker_mapping = {}
     
     print('Converting and organizing files...')
+    skipped_duration = 0
+    total_processed = 0
+    
     for index, row in tqdm(df.iterrows(), total=df.shape[0]):
         original_speaker_id = row['client_id']
         clip_filename = row['path']
+        
+        in_file = os.path.join(clips_path, clip_filename)
+        if not os.path.exists(in_file):
+            print(f"Warning: {in_file} does not exist, skipping.")
+            continue
+        
+        if duration is not None:
+            audio_duration = get_audio_duration(in_file)
+            if audio_duration is None:
+                print(f"Warning: Could not get duration for {in_file}, skipping.")
+                continue
+            elif audio_duration < duration:
+                skipped_duration += 1
+                continue
         
         # Create short speaker ID and maintain mapping
         if original_speaker_id not in speaker_mapping:
@@ -74,22 +110,23 @@ def convert_and_organize(extracted_path, save_path, tsv_filename='validated.tsv'
         speaker_dir = os.path.join(output_wav_path, short_speaker_id)
         os.makedirs(speaker_dir, exist_ok=True)
         
-        in_file = os.path.join(clips_path, clip_filename)
         out_file = os.path.join(speaker_dir, os.path.splitext(clip_filename)[0] + '.wav')
 
-        if not os.path.exists(in_file):
-            print(f"Warning: {in_file} does not exist, skipping.")
-            continue
-        
-        # Use subprocess with shell=False for better cross-platform compatibility
+        # Build ffmpeg command
         cmd = [
             'ffmpeg', '-y', '-i', in_file, 
             '-ac', '1', '-vn', '-acodec', 'pcm_s16le', 
-            '-ar', '16000', out_file
+            '-ar', '16000'
         ]
+        
+        if duration is not None:
+            cmd.extend(['-t', str(duration)])
+            
+        cmd.append(out_file)
         
         try:
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            total_processed += 1
         except subprocess.CalledProcessError:
             print(f"Warning: Failed to convert {in_file}, skipping.")
             continue
@@ -99,34 +136,81 @@ def convert_and_organize(extracted_path, save_path, tsv_filename='validated.tsv'
     with open(speaker_mapping_file, 'w') as f:
         for original_id, short_id in speaker_mapping.items():
             f.write(f"{original_id}\t{short_id}\n")
+    
+    print(f"Conversion complete:")
+    print(f"  Total files processed: {total_processed}")
+    if duration is not None:
+        print(f"  Files skipped due to duration < {duration}s: {skipped_duration}")
 
-def create_lists(save_path, train_split=0.9, num_verification_trials=1000):
+def create_lists(save_path, train_split=0.9, num_verification_trials=1000, max_speakers=None, files_per_speaker=None):
     print("Creating train and test lists...")
     wav_path = os.path.join(save_path, 'common_voice_wav')
     speakers = os.listdir(wav_path)
-    random.shuffle(speakers)
+    
+    valid_speakers = []
+    for speaker in speakers:
+        speaker_dir = os.path.join(wav_path, speaker)
+        if os.path.isdir(speaker_dir):
+            files = [f for f in os.listdir(speaker_dir) if f.endswith('.wav')]
+            
+            if files_per_speaker is not None:
+                if len(files) >= files_per_speaker:
+                    valid_speakers.append(speaker)
+            else:
+                if len(files) >= 2:  
+                    valid_speakers.append(speaker)
+    
+    if files_per_speaker is not None:
+        print(f"Found {len(valid_speakers)} speakers with at least {files_per_speaker} audio files")
+    else:
+        print(f"Found {len(valid_speakers)} speakers with at least 2 audio files")
+    
+    if max_speakers is not None and len(valid_speakers) > max_speakers:
+        speaker_file_counts = []
+        for speaker in valid_speakers:
+            speaker_dir = os.path.join(wav_path, speaker)
+            file_count = len([f for f in os.listdir(speaker_dir) if f.endswith('.wav')])
+            speaker_file_counts.append((speaker, file_count))
+        
+        speaker_file_counts.sort(key=lambda x: x[1], reverse=True)
+        valid_speakers = [speaker for speaker, _ in speaker_file_counts[:max_speakers]]
+        print(f"Limited to {max_speakers} speakers with most audio files")
+    
+    random.shuffle(valid_speakers)
 
-    split_idx = int(len(speakers) * train_split)
-    train_speakers = speakers[:split_idx]
-    test_speakers = speakers[split_idx:]
+    split_idx = int(len(valid_speakers) * train_split)
+    train_speakers = valid_speakers[:split_idx]
+    test_speakers = valid_speakers[split_idx:]
 
-    # Create train list (same format as before)
+    print(f"Split: {len(train_speakers)} training speakers, {len(test_speakers)} test speakers")
+
+    # Create train list
     def write_train_list(speaker_list, list_path):
+        total_files = 0
         with open(list_path, 'w') as f:
             for speaker_id in tqdm(speaker_list, desc="Writing train list"):
                 speaker_dir = os.path.join(wav_path, speaker_id)
                 if not os.path.isdir(speaker_dir):
                     continue
-                for utt_file in os.listdir(speaker_dir):
-                    if utt_file.endswith('.wav'):
-                        file_path = os.path.join(speaker_id, utt_file)
-                        f.write(f"{speaker_id} {file_path}\n")
+                
+                audio_files = [f for f in os.listdir(speaker_dir) if f.endswith('.wav')]
+                
+                if files_per_speaker is not None:
+                    audio_files = audio_files[:files_per_speaker]
+                
+                for utt_file in audio_files:
+                    file_path = os.path.join(speaker_id, utt_file)
+                    f.write(f"{speaker_id} {file_path}\n")
+                    total_files += 1
+        
+        if files_per_speaker is not None:
+            print(f"Train list created with {total_files} files (max {files_per_speaker} files per speaker)")
+        else:
+            print(f"Train list created with {total_files} files")
 
-    # Create verification test list
     def write_verification_list(speaker_list, list_path, num_trials):
         verification_trials = []
         
-        # Collect all files for test speakers
         speaker_files = {}
         for speaker_id in speaker_list:
             speaker_dir = os.path.join(wav_path, speaker_id)
@@ -185,6 +269,9 @@ if __name__ == "__main__":
     parser.add_argument('--convert', dest='convert', action='store_true', help='Enable convert and organize')
     parser.add_argument('--create_lists', dest='create_lists', action='store_true', help='Enable creation of train/test lists')
     parser.add_argument('--num_trials', type=int, default=100, help='Number of verification trials to generate')
+    parser.add_argument('--max_speakers', type=int, default=None, help='Maximum number of speakers to include')
+    parser.add_argument('--duration', type=float, default=None, help='Maximum duration in seconds (files shorter than this will be skipped, longer will be trimmed)')
+    parser.add_argument('--files_per_speaker', type=int, default=None, help='Exact number of files per speaker (speakers with fewer files will be excluded, speakers with more files will be limited to this number)')
 
     args = parser.parse_args()
 
@@ -195,7 +282,7 @@ if __name__ == "__main__":
         full_extract(args.archive_path, extracted_path)
 
     if args.convert:
-        convert_and_organize(extracted_path, args.save_path)
+        convert_and_organize(extracted_path, args.save_path, duration=args.duration)
 
     if args.create_lists:
-        create_lists(args.save_path, num_verification_trials=args.num_trials)
+        create_lists(args.save_path, num_verification_trials=args.num_trials, max_speakers=args.max_speakers, files_per_speaker=args.files_per_speaker)
