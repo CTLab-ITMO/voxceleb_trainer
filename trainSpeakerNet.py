@@ -90,7 +90,9 @@ parser.add_argument('--port',           type=str,   default="8888", help='Port f
 parser.add_argument('--distributed',    dest='distributed', action='store_true', help='Enable distributed training')
 parser.add_argument('--mixedprec',      dest='mixedprec',   action='store_true', help='Enable mixed precision training')
 parser.add_argument('--visualize_embeddings', dest='visualize_embeddings', action='store_true', help='Visualize embeddings during evaluation')
-
+parser.add_argument('--pca', dest='pca', action='store_true', help='Visualize embeddings with PCA')
+parser.add_argument('--tsne', dest='tsne', action='store_true', help='Visualize embeddings with t-SNE')
+parser.add_argument('--stats', dest='stats', action='store_true', help='Visualize embedding statistics')
 
 args = parser.parse_args()
 
@@ -115,6 +117,21 @@ if args.config is not None:
 ## ===== ===== ===== ===== ===== ===== ===== =====
 ## Trainer script
 ## ===== ===== ===== ===== ===== ===== ===== =====
+
+def visualize_embeddings_if_needed(args, s, loader, save_path, suffix):
+    if args.visualize_embeddings or args.pca or args.tsne:
+        visualizer = EmbeddingVisualizer(save_path, max_samples_per_speaker=20)
+        methods = []
+        if args.pca:
+            methods.append('pca')
+        if args.tsne:
+            methods.append('tsne')
+        if args.stats:
+            methods.append('stats')
+        if not methods and args.visualize_embeddings:
+            methods = ['all']
+        visualizer.visualize_embeddings(s, loader, num_speakers=10, title_suffix=suffix, methods=methods)
+        print(f"Visualization plots saved to: {save_path}")
 
 def main_worker(gpu, ngpus_per_node, args):
 
@@ -175,6 +192,8 @@ def main_worker(gpu, ngpus_per_node, args):
         print("Model {} loaded from previous state!".format(modelfiles[-1]))
         it = int(os.path.splitext(os.path.basename(modelfiles[-1]))[0][5:]) + 1
 
+    visualize_embeddings = (args.visualize_embeddings or args.pca or args.tsne or args.stats)
+
     for ii in range(1,it):
         trainer.__scheduler__.step()
 
@@ -186,7 +205,7 @@ def main_worker(gpu, ngpus_per_node, args):
         print('Total parameters: ',pytorch_total_params)
         print('Test list',args.test_list)
         
-        if args.visualize_embeddings and args.gpu == 0:
+        if visualize_embeddings and args.gpu == 0:
             print("Starting embedding visualization...")
             
             with open(args.test_list) as f:
@@ -204,13 +223,9 @@ def main_worker(gpu, ngpus_per_node, args):
             vis_loader = torch.utils.data.DataLoader(vis_dataset, batch_size=1, shuffle=False, num_workers=args.nDataLoaderThread)
             
             viz_save_path = os.path.join(args.result_save_path, "embeddings_visualization")
-            visualizer = EmbeddingVisualizer(viz_save_path, max_samples_per_speaker=20)
-            
             adapter_suffix = " (without adapter)" if args.disable_adapter else " (with adapter)"
             
-            visualizer.visualize_embeddings(s, vis_loader, num_speakers=10, title_suffix=adapter_suffix)
-            
-            print(f"Visualization plots saved to: {viz_save_path}")
+            visualize_embeddings_if_needed(args, s, vis_loader, viz_save_path, adapter_suffix)
             
         sc, lab, _ = trainer.evaluateFromList(**vars(args))
 
@@ -273,6 +288,21 @@ def main_worker(gpu, ngpus_per_node, args):
                     eerfile.write('{:2.4f}'.format(result[1]))
 
                 scorefile.flush()
+
+                if visualize_embeddings:
+                    # Визуализация на тестовой выборке после тестирования
+                    test_files = []
+                    with open(args.test_list) as f:
+                        for line in f:
+                            parts = line.strip().split()
+                            if len(parts) >= 3:
+                                test_files.extend([parts[1], parts[2]])
+                    test_files = list(set(test_files))
+                    vis_dataset = test_dataset_loader(test_files, args.test_path, eval_frames=args.eval_frames, num_eval=args.num_eval)
+                    vis_loader = torch.utils.data.DataLoader(vis_dataset, batch_size=1, shuffle=False, num_workers=args.nDataLoaderThread)
+                    viz_save_path = os.path.join(args.result_save_path, f"embeddings_visualization_epoch_{it}")
+                    adapter_suffix = f" (epoch {it})"
+                    visualize_embeddings_if_needed(args, s, vis_loader, viz_save_path, adapter_suffix)
 
     if args.gpu == 0:
         scorefile.close()

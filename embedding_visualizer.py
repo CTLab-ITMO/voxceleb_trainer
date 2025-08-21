@@ -186,7 +186,7 @@ class EmbeddingVisualizer:
         print(f"Statistics plot saved to {os.path.join(self.save_path, filename)}")
         plt.close()
     
-    def visualize_embeddings(self, model, test_loader, num_speakers=10, title_suffix=""):
+    def visualize_embeddings(self, model, test_loader, num_speakers=10, title_suffix="", methods=['all']):
         print(f"Starting embedding visualization{title_suffix}...")
         
         embeddings, labels, speaker_names, speakers_list = self.extract_embeddings_with_labels(
@@ -198,9 +198,12 @@ class EmbeddingVisualizer:
             return
         
         # Создать статистики
-        self.create_embedding_stats_plot(embeddings, title_suffix)
-        self.visualize_with_pca(embeddings, labels, speaker_names, title_suffix)
-        self.visualize_with_tsne(embeddings, labels, speaker_names, title_suffix)
+        if 'all' in methods or 'stats' in methods:
+            self.create_embedding_stats_plot(embeddings, title_suffix)
+        if 'all' in methods or 'pca' in methods:
+            self.visualize_with_pca(embeddings, labels, speaker_names, title_suffix)
+        if 'all' in methods or 'tsne' in methods:
+            self.visualize_with_tsne(embeddings, labels, speaker_names, title_suffix)
         
         print(f"\nVisualized speakers{title_suffix}:")
         for i, speaker in enumerate(speakers_list):
