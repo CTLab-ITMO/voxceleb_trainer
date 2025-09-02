@@ -1,5 +1,6 @@
 # ITMO Lera
 common_voice/
+voxceleb/
 .idea/
 other.tsv
 models_for_test/

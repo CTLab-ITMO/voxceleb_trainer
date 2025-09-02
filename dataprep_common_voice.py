@@ -103,9 +103,10 @@ def convert_and_organize(extracted_path, save_path, tsv_filename='other.tsv'):
         for original_id, short_id in speaker_mapping.items():
             f.write(f"{original_id}\t{short_id}\n")
 
-def create_lists(save_path, train_split=0.9, len_train_speakers=0, len_test_speakers=0, min_seg_per_spk=0, min_frames=600, min_eval_frames=300):
+def create_lists(save_path, train_split=0.9, len_train_speakers=0, len_test_speakers=0, min_seg_per_spk=0, min_frames=0, min_eval_frames=0):
     print("Creating train and test lists...")
-    wav_path = os.path.join(save_path, 'common_voice_wav')
+    #wav_path = os.path.join(save_path, 'common_voice_wav')
+    wav_path = os.path.join(save_path, 'dev')
     speakers = [spk for spk in os.listdir(wav_path) if os.path.isdir(os.path.join(wav_path, spk))]
     if len_test_speakers == 0: # Если отдельное ограничение по числу тестовых спикеров не задано...
         len_test_speakers = int(len(speakers) * (1 - train_split))  # Берем по заданному разбиению
@@ -115,7 +116,17 @@ def create_lists(save_path, train_split=0.9, len_train_speakers=0, len_test_spea
         speaker_segs = defaultdict(list)
         for speaker in speakers:
             speaker_dir = os.path.join(wav_path, speaker)
-            wav_files = [f for f in os.listdir(speaker_dir) if f.endswith('.wav')]
+            wav_files = []
+            # Рекурсивный поиск во всех подпапках
+            for root, dirs, files in os.walk(speaker_dir):
+                for file in files:
+                    if file.endswith('.wav'):
+                        # Получаем полный путь к файлу
+                        full_path = os.path.join(root, file)
+                        # Преобразуем в относительный путь от speaker_dir
+                        relative_path = os.path.relpath(full_path, speaker_dir)
+                        relative_path = relative_path.replace('\\', '/')
+                        wav_files.append(relative_path)
 
             # ФИЛЬТРУЕМ файлы по длине
             valid_files = []
@@ -225,8 +236,7 @@ def create_lists(save_path, train_split=0.9, len_train_speakers=0, len_test_spea
     with open(os.path.join(save_path, train_file_name), 'w') as train_file:
         for speaker in tqdm(train_speakers):
             for wav_file in train_speaker_segs[speaker]:
-                if wav_file.endswith('.wav'):
-                    train_file.write(f"{speaker} {speaker}/{wav_file}\n")
+                train_file.write(f"{speaker} {speaker}/{wav_file}\n")
 
 
 if __name__ == "__main__":
