@@ -248,7 +248,7 @@ class ModelTrainer(object):
         loaded_state = torch.load(path, map_location="cuda:%d" % self.gpu)
 
         if model_name == "ECAPA":
-            if any('speaker_encoder' in key for key in loaded_state.keys()):
+                print(model_name)
                 new_dict = {}
                 for key, value in loaded_state.items():
                     # Пропускаем ВСЕ параметры лосса
@@ -263,6 +263,14 @@ class ModelTrainer(object):
                     else:
                         new_dict[key] = value
                 loaded_state = new_dict
+
+        elif "redimnet" in model_name:
+            print(model_name)
+            new_dict = {}
+            for key, value in loaded_state.items():
+                new_key = '__S__.' + key
+                new_dict[new_key] = value
+            loaded_state = new_dict
 
         if len(loaded_state.keys()) == 1 and "model" in loaded_state:
             loaded_state = loaded_state["model"]
@@ -300,5 +308,25 @@ class ModelTrainer(object):
                 else:
                     param.requires_grad = False  # Замораживаем
                     print(f"Frozen: {name}")
-
             print("Only fc6 and bn6 layers are trainable")
+
+        elif "redimnet" in model_name:
+            # ЗАМОРОЗКА ВСЕХ СЛОЕВ КРОМЕ ФИНАЛЬНЫХ
+            # ТОЧНЫЕ полные имена финальных слоёв
+            trainable_layers = {
+                '__S__.pool.linear2.weight',
+                '__S__.pool.linear2.bias',
+                '__S__.bn2.weight',
+                '__S__.bn2.bias',
+                '__S__.bn2.running_mean',
+                '__S__.bn2.running_var',
+                '__S__.bn2.num_batches_tracked',
+                '__S__.linear.weight',
+                '__S__.linear.bias'
+            }
+            for name, param in self.__model__.module.named_parameters():
+                if name in trainable_layers:
+                    param.requires_grad = True
+                    print(f"Trainable: {name}")
+                else:
+                    param.requires_grad = False

@@ -5,7 +5,12 @@ voxceleb/
 other.tsv
 models_for_test/
 exps_old/
+musan/
+musan_split/
+RIRS_NOISES/
+layers/
 a.py
+model000000001.model
 
 
 # Other files

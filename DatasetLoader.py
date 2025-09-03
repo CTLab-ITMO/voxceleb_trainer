@@ -67,14 +67,21 @@ class AugmentWAV(object):
         self.numnoise   = {'noise':[1,1], 'speech':[3,7],  'music':[1,1] }
         self.noiselist  = {}
 
-        augment_files   = glob.glob(os.path.join(musan_path,'*/*/*/*.wav'));
+        aug_path = os.path.join(musan_path, '*', '*', '*', '*.wav')
+        print(aug_path)
+        augment_files = glob.glob(aug_path)
 
         for file in augment_files:
-            if not file.split('/')[-4] in self.noiselist:
-                self.noiselist[file.split('/')[-4]] = []
-            self.noiselist[file.split('/')[-4]].append(file)
+            file_parts = file.split(os.sep)  # Используем os.sep
+            category = file_parts[-4]  # Категория шума
 
-        self.rir_files  = glob.glob(os.path.join(rir_path,'*/*/*.wav'));
+            if category not in self.noiselist:
+                self.noiselist[category] = []
+            self.noiselist[category].append(file)
+
+        rir_path = os.path.join(rir_path, '*', '*', '*.wav')
+        print(rir_path)
+        self.rir_files = glob.glob(rir_path)
 
     def additive_noise(self, noisecat, audio):
 

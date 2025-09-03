@@ -169,6 +169,7 @@ def split_musan(args):
 ## ========== ===========
 if __name__ == "__main__":
 
+    '''
     if not os.path.exists(args.save_path):
         raise ValueError('Target directory does not exist.')
 
@@ -183,11 +184,14 @@ if __name__ == "__main__":
     f = open('lists/augment.txt','r')
     augfiles = f.readlines()
     f.close()
+    '''
 
     if args.augment:
+        '''
         download(args,augfiles)
         part_extract(args,os.path.join(args.save_path,'rirs_noises.zip'),['RIRS_NOISES/simulated_rirs/mediumroom','RIRS_NOISES/simulated_rirs/smallroom'])
         full_extract(args,os.path.join(args.save_path,'musan.tar.gz'))
+        '''
         split_musan(args)
 
     if args.download:
