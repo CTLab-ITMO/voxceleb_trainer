@@ -28,7 +28,7 @@ parser.add_argument('--config',         type=str,   default=None,   help='Config
 ## Data loader
 parser.add_argument('--max_frames',     type=int,   default=600,    help='Input length to the network for training')
 parser.add_argument('--eval_frames',    type=int,   default=300,    help='Input length to the network for testing 0 uses the whole files')
-parser.add_argument('--batch_size',     type=int,   default=200,    help='Batch size, number of speakers per batch')
+parser.add_argument('--batch_size',     type=int,   default=20,    help='Batch size, number of speakers per batch')
 parser.add_argument('--max_seg_per_spk', type=int,  default=500,    help='Maximum number of utterances per speaker per epoch')
 parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number of loader threads')
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
@@ -64,14 +64,20 @@ parser.add_argument('--initial_model',  type=str,   default="",     help='Initia
 parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='Path for model and logs')
 
 # Подсчет числа классов (уникальных спикеров)
-train_path = "common_voice/train_list_1897_min_seg_10.txt"
+
+train_path = "voxceleb/train_list_1011_min_seg_10_min_frames_100.txt"
+'''
 unique_speakers = set()
 with open(train_path, 'r') as file:
     for line in file:
         speaker_id = line.strip().split()[0]
         unique_speakers.add(speaker_id)
 #print("Num of speakers (train): ", len(unique_speakers))
-parser.add_argument('--nClasses',       type=int,   default=len(unique_speakers),   help='Number of speakers in the softmax layer, only for softmax-based losses')
+nClasses = en(unique_speakers)
+'''
+
+nClasses = 1300
+parser.add_argument('--nClasses',       type=int,   default=nClasses,   help='Number of speakers in the softmax layer, only for softmax-based losses')
 
 ## Training and test data
 parser.add_argument('--train_list',     type=str,   default=train_path,  help='Train list')
@@ -222,10 +228,10 @@ def main_worker(gpu, ngpus_per_node, args):
     modelfiles.sort()
 
     if (args.initial_model != ""):
-        trainer.loadParameters(args.initial_model)
+        trainer.loadParameters(args.initial_model, args.model)
         print("Model {} loaded!".format(args.initial_model))
     elif len(modelfiles) >= 1:
-        trainer.loadParameters(modelfiles[-1])
+        trainer.loadParameters(modelfiles[-1], args.model)
         print("Model {} loaded from previous state!".format(modelfiles[-1]))
         it = int(os.path.splitext(os.path.basename(modelfiles[-1]))[0][5:]) + 1
 

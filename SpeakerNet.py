@@ -242,10 +242,28 @@ class ModelTrainer(object):
     ## Load parameters
     ## ===== ===== ===== ===== ===== ===== ===== =====
 
-    def loadParameters(self, path):
+    def loadParameters(self, path, model_name):
 
         self_state = self.__model__.module.state_dict()
         loaded_state = torch.load(path, map_location="cuda:%d" % self.gpu)
+
+        if model_name == "ECAPA":
+            if any('speaker_encoder' in key for key in loaded_state.keys()):
+                new_dict = {}
+                for key, value in loaded_state.items():
+                    # Пропускаем ВСЕ параметры лосса
+                    if 'speaker_loss' in key:
+                        print(f"Skipping classifier parameter: {key}")
+                        continue
+
+                    # Преобразуем имена энкодера
+                    if 'speaker_encoder' in key:
+                        new_key = key.replace('speaker_encoder.', '__S__.')  # Заменяем префикс
+                        new_dict[new_key] = value
+                    else:
+                        new_dict[key] = value
+                loaded_state = new_dict
+
         if len(loaded_state.keys()) == 1 and "model" in loaded_state:
             loaded_state = loaded_state["model"]
             newdict = {}
@@ -271,3 +289,16 @@ class ModelTrainer(object):
                 continue
 
             self_state[name].copy_(param)
+
+        if model_name == "ECAPA":
+            # ЗАМОРОЗКА ВСЕХ СЛОЕВ КРОМЕ ФИНАЛЬНЫХ
+            for name, param in self.__model__.module.named_parameters():
+                # Замораживаем ВСЁ, кроме fc6 и bn6
+                if 'fc6' in name or 'bn6' in name:
+                    param.requires_grad = True  # Размораживаем
+                    print(f"Trainable: {name}")
+                else:
+                    param.requires_grad = False  # Замораживаем
+                    print(f"Frozen: {name}")
+
+            print("Only fc6 and bn6 layers are trainable")
