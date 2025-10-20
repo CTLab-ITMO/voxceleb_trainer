@@ -24,25 +24,29 @@ class WrappedModel(nn.Module):
 
 
 class SpeakerNet(nn.Module):
-    def __init__(self, model, optimizer, trainfunc, nPerSpeaker, disable_adapter=False, **kwargs):
+    def __init__(self, model, optimizer, trainfunc, nPerSpeaker, disable_adapter=False, freeze_level=0, **kwargs):
         super(SpeakerNet, self).__init__()
 
         SpeakerNetModel = importlib.import_module("models." + model).__getattribute__("MainModel")
         self.__S__ = SpeakerNetModel(**kwargs)
 
         self.disable_adapter = disable_adapter
+        self.freeze_level = freeze_level
         
         if not disable_adapter:
             LossFunction = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")
             self.__L__ = LossFunction(**kwargs)
             print(f"Adapter (Loss Function) enabled: {trainfunc}")
         else:
-            # Use simple cosine similarity loss when adapter is disabled
             LossFunction = importlib.import_module("loss.cosine").__getattribute__("LossFunction")
             self.__L__ = LossFunction(**kwargs)
             print("Adapter (Loss Function) disabled - using cosine similarity loss")
 
         self.nPerSpeaker = nPerSpeaker
+        
+        if freeze_level > 0:
+            print(f"\nApplying initial freeze level: {freeze_level}")
+            self.apply_freeze_level(freeze_level)
 
     def forward(self, data, label=None):
 
@@ -56,7 +60,105 @@ class SpeakerNet(nn.Module):
             outp = outp.reshape(self.nPerSpeaker, -1, outp.size()[-1]).transpose(1, 0).squeeze(1)
             nloss, prec1 = self.__L__.forward(outp, label)
             return nloss, prec1
+        
+    
+    def get_layer_groups(self):
+        model = self.__S__
+        
+        conv_params = []
+        early_params = []
+        late_params = []
+        final_params = []
+        adapter_params = []
+        
+        if not self.disable_adapter and hasattr(self, '__L__'):
+            for param in self.__L__.parameters():
+                adapter_params.append(param)
+        
+        for name, param in model.named_parameters():
+            name_lower = name.lower()
+            
+            if any(p is param for p in adapter_params):
+                continue
+            
+            if any(x in name_lower for x in ['conv1d', 'conv2d', 'conv.', 'stem.0', 'torchfb', 'spec', 'preemph', 'melbank']):
+                conv_params.append(param)
+                
+            elif any(x in name_lower for x in ['pool', 'linear', 'fc', 'proj', 'bn.weight', 'bn.bias', 'emb_bn']):
+                final_params.append(param)
+                
+            elif any(x in name_lower for x in ['attention', 'k_proj', 'v_proj', 'q_proj', 'out_proj', 'feed_forward']):
+                late_params.append(param)
+                
+            elif any(x in name_lower for x in ['layer_norm', 'final_layer_norm', 'norm.weight', 'norm.bias']):
+                late_params.append(param)
+                
+            else:
+                early_params.append(param)
+        
+        groups = [
+            ("conv", conv_params),
+            ("early", early_params), 
+            ("late", late_params),
+            ("final", final_params),
+            ("adapter", adapter_params)
+        ]
+        
+        return groups
 
+    def apply_freeze_level(self, level):
+        """
+        Apply freezing based on level:
+        0: No freezing
+        1: Freeze all except adapter  
+        2: Unfreeze final layers (pooling, projection, final BN)
+        3: Unfreeze late layers (attention, layer norms)
+        4: Unfreeze early layers (backbone, but keep conv frozen)
+        5+: Unfreeze everything including conv
+        """
+        groups = self.get_layer_groups()
+        
+        freeze_status = {
+            "conv": level < 5,  
+            "early": level < 4, 
+            "late": level < 3,  
+            "final": level < 2,  
+            "adapter": False  
+        }
+        
+        total_params = 0
+        frozen_params = 0
+        active_params = 0
+        
+        for group_name, params in groups:
+            should_freeze = freeze_status.get(group_name, False)
+            
+            for param in params:
+                param.requires_grad_(not should_freeze)
+                total_params += param.numel()
+                if should_freeze:
+                    frozen_params += param.numel()
+                else:
+                    active_params += param.numel()
+        
+        print(f"Freeze level {level}: {frozen_params}/{total_params} parameters frozen ({100*frozen_params/total_params:.1f}%)")
+        print(f"Active parameters: {active_params} ({100*active_params/total_params:.1f}%)")
+        
+        for group_name, params in groups:
+            if params:
+                status = "FROZEN" if freeze_status.get(group_name, False) else "ACTIVE"
+                group_size = sum(p.numel() for p in params)
+                print(f"  {group_name}: {group_size} params, {status}")
+        
+        if active_params == 0:
+            print("WARNING: No active parameters! Unfreezing final layer as fallback...")
+            for group_name, params in groups:
+                if group_name == "final":
+                    for param in params:
+                        param.requires_grad_(True)
+                        active_params += param.numel()
+                    print(f"Fallback: Activated {sum(p.numel() for p in params)} final layer parameters")
+                    break
 
 class ModelTrainer(object):
     def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, **kwargs):
@@ -233,7 +335,8 @@ class ModelTrainer(object):
 
                 if idx % print_interval == 0:
                     telapsed = time.time() - tstart
-                    sys.stdout.write("\rComputing {:d} of {:d}: {:.2f} Hz".format(idx, len(lines), idx / telapsed))
+                    hz = idx / telapsed if telapsed > 1e-6 else 0.0
+                    sys.stdout.write("\rComputing {:d} of {:d}: {:.2f} Hz".format(idx, len(lines), hz))
                     sys.stdout.flush()
 
         return (all_scores, all_labels, all_trials)
@@ -265,6 +368,20 @@ class ModelTrainer(object):
             loaded_state.update(newdict)
             for name in delete_list:
                 del loaded_state[name]
+        for name, param in loaded_state.items():
+            origname = name
+            if name not in self_state:
+                name = name.replace("module.", "")
+
+                if name not in self_state:
+                    print("{} is not in the model.".format(origname))
+                    continue
+
+            if self_state[name].size() != loaded_state[origname].size():
+                print("Wrong parameter length: {}, model: {}, loaded: {}".format(origname, self_state[name].size(), loaded_state[origname].size()))
+                continue
+
+            self_state[name].copy_(param)
         for name, param in loaded_state.items():
             origname = name
             if name not in self_state:

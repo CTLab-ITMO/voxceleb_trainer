@@ -35,7 +35,7 @@ parser.add_argument('--augment',        type=bool,  default=False,  help='Augmen
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator')
 
 ## Training details
-parser.add_argument('--test_interval',  type=int,   default=10,     help='Test and save every [test_interval] epochs')
+parser.add_argument('--test_interval',  type=int,   default=5,     help='Test and save every [test_interval] epochs')
 parser.add_argument('--max_epoch',      type=int,   default=500,    help='Maximum number of epochs')
 parser.add_argument('--trainfunc',      type=str,   default="amsoftmax",     help='Loss function')
 
@@ -54,6 +54,11 @@ parser.add_argument('--scale',          type=float, default=30,     help='Loss s
 parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses')
 parser.add_argument('--nClasses',       type=int,   default=5994,   help='Number of speakers in the softmax layer, only for softmax-based losses')
 parser.add_argument('--eachOther',      dest='eachOther', action='store_true', help='Ensure every speaker is compared with every other speaker in exhaustive pairwise batches')
+parser.add_argument('--range_alpha',    type=float, default=1e-5,   help='Weight for the intra-class term in range loss')
+parser.add_argument('--range_beta',     type=float, default=1e-4,   help='Weight for the inter-class term in range loss')
+parser.add_argument('--range_lambda',   type=float, default=1.0,    help='Overall multiplier for range loss contribution')
+parser.add_argument('--range_margin',   type=float, default=0.5,    help='Margin for inter-class center distances in range loss')
+parser.add_argument('--range_k',        type=int,   default=2,      help='Number of intra-class distances considered in range loss')
 
 ## Evaluation parameters
 parser.add_argument('--dcf_p_target',   type=float, default=0.05,   help='A priori probability of the specified target speaker')
@@ -81,6 +86,15 @@ parser.add_argument('--encoder_type',   type=str,   default="SAP",  help='Type o
 parser.add_argument('--nOut',           type=int,   default=512,    help='Embedding size in the last FC layer')
 parser.add_argument('--sinc_stride',    type=int,   default=10,    help='Stride size of the first analytic filterbank layer of RawNet3')
 parser.add_argument('--disable_adapter', dest='disable_adapter', action='store_true', help='Disable adapter in model')
+# ReDimNet (IDRnD) optional configuration, used only when --model ReDimNetIDRND
+parser.add_argument('--redim_model_name', type=str, default='b0',  help='ReDimNet size preset: b0,b1,b2,b3,b5,b6,M,...')
+parser.add_argument('--redim_train_type', type=str, default='ptn', help='ReDimNet train type: ptn, ft_lm, ft_mix')
+parser.add_argument('--redim_dataset',    type=str, default='vox2',help='ReDimNet upstream dataset: vox2, vb2+vox2+cnc')
+
+## Layer freezing parameters
+parser.add_argument('--freeze_level',    type=int,   default=0,     help='Freeze level: 0=no freeze, 1=freeze all except adapter, 2=unfreeze last FC+BN, 3=unfreeze more layers')
+parser.add_argument('--unfreeze_epoch',  type=int,   default=0,    help='Epoch to increase unfreeze level (0 to disable)')
+parser.add_argument('--max_unfreeze_level', type=int, default=4,    help='Maximum unfreeze level to reach')
 
 ## For test only
 parser.add_argument('--eval',           dest='eval', action='store_true', help='Eval only')
@@ -155,6 +169,13 @@ def main_worker(gpu, ngpus_per_node, args):
 
     else:
         s = WrappedModel(s).cuda(args.gpu)
+
+    if args.freeze_level > 0 and args.gpu == 0:
+        print(f"\nInitial freeze level: {args.freeze_level}")
+        
+        speaker_net = s.module if hasattr(s, 'module') else s
+        if hasattr(speaker_net, 'apply_freeze_level'):
+            speaker_net.apply_freeze_level(args.freeze_level)
 
     it = 1
     eers = [100]
@@ -233,8 +254,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
             result = tuneThresholdfromScore(sc, lab, [1, 0.1])
 
-            fnrs, fprs, thresholds = ComputeErrorRates(sc, lab)
-            mindcf, threshold = ComputeMinDcf(fnrs, fprs, thresholds, args.dcf_p_target, args.dcf_c_miss, args.dcf_c_fa)
+            fnrs, fprs, thresholds = ComputeErrorRates(sc, lab, thresholds, args.dcf_p_target, args.dcf_c_miss, args.dcf_c_fa)
 
             print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "VEER {:2.4f}".format(result[1]), "MinDCF {:2.5f}".format(mindcf))
 
@@ -257,6 +277,8 @@ def main_worker(gpu, ngpus_per_node, args):
     for it in range(it,args.max_epoch+1):
 
         train_sampler.set_epoch(it)
+        
+
 
         clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
 
@@ -303,6 +325,23 @@ def main_worker(gpu, ngpus_per_node, args):
                     viz_save_path = os.path.join(args.result_save_path, f"embeddings_visualization_epoch_{it}")
                     adapter_suffix = f" (epoch {it})"
                     visualize_embeddings_if_needed(args, s, vis_loader, viz_save_path, adapter_suffix)
+        
+        if args.unfreeze_epoch > 0 and it % args.unfreeze_epoch == 0 and it > 0:
+            new_freeze_level = max(0, args.freeze_level + (it // args.unfreeze_epoch))
+            new_freeze_level = min(new_freeze_level, args.max_unfreeze_level)
+            
+            speaker_net = s.module if hasattr(s, 'module') else s
+            
+            if hasattr(speaker_net, 'apply_freeze_level') and new_freeze_level != speaker_net.freeze_level:
+                print(f"\nEpoch {it}: Updating freeze level from {speaker_net.freeze_level} to {new_freeze_level}")
+                speaker_net.freeze_level = new_freeze_level
+                speaker_net.apply_freeze_level(new_freeze_level)
+                
+                print("Recreating optimizer for newly unfrozen parameters...")
+                active_params = [p for p in speaker_net.parameters() if p.requires_grad]
+                print(f"Active parameters: {sum(p.numel() for p in active_params)}")
+                
+                trainer.__optimizer__.param_groups[0]['params'] = active_params
 
     if args.gpu == 0:
         scorefile.close()
