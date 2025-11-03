@@ -34,6 +34,7 @@ parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator')
 parser.add_argument('--combinations', action='store_true', help='Enable combination sampling')
+parser.add_argument('--freeze', action='store_true', help='Freeze all except of last layers')
 
 ## Training details
 parser.add_argument('--test_interval',  type=int,   default=1,     help='Test and save every [test_interval] epochs')

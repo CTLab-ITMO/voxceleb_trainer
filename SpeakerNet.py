@@ -54,7 +54,7 @@ class SpeakerNet(nn.Module):
 
 
 class ModelTrainer(object):
-    def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, **kwargs):
+    def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, freeze = False, **kwargs):
         self.__model__ = speaker_model
         self.use_center_loss = hasattr(self.__model__.module.__L__, 'center_loss')
 
@@ -76,6 +76,8 @@ class ModelTrainer(object):
         self.gpu = gpu
 
         self.mixedprec = mixedprec
+
+        self.freeze = freeze
 
         assert self.lr_step in ["epoch", "iteration"]
 
@@ -302,6 +304,9 @@ class ModelTrainer(object):
         self_state = self.__model__.module.state_dict()
         loaded_state = torch.load(path, map_location="cuda:%d" % self.gpu)
 
+        '''
+        Убираются лишние слои, остальные приводятся к корректному виду
+        '''
         if model_name == "ECAPA":
                 print(model_name)
                 new_dict = {}
@@ -354,21 +359,20 @@ class ModelTrainer(object):
             self_state[name].copy_(param)
 
 
+        '''
+        Заморозка слоев
+        '''
         if model_name == "ECAPA":
-            # ЗАМОРОЗКА ВСЕХ СЛОЕВ КРОМЕ ФИНАЛЬНЫХ
             for name, param in self.__model__.module.named_parameters():
-                if '__L__.center_loss' in name:
+                if '__L__.center_loss' in name: # Если централ лосс, замораживается вспомогательный класс; необучаемый параметр
                     param.requires_grad = False
-                '''
-                # Замораживаем ВСЁ, кроме fc6 и bn6
-                if 'fc6' in name or 'bn6' in name or '__L__.fc' in name:
-                    param.requires_grad = True  # Размораживаем
-                    print(f"Trainable: {name}")
-                else:
-                    param.requires_grad = False  # Замораживаем
-                    print(f"Frozen: {name}")
-                '''
-            #print("Only fc6 and bn6 layers are trainable")
+                if self.freeze: # Если заморозка включена, замораживаем ВСЁ, кроме fc6 и bn6 и полносвязного слоя в лоссе (если есть)
+                    if 'fc6' in name or 'bn6' in name or '__L__.fc' in name:
+                        param.requires_grad = True  # Размораживаем
+                        print(f"Trainable: {name}")
+                    else:
+                        param.requires_grad = False  # Замораживаем
+                        print(f"Frozen: {name}")
 
         elif "redimnet" in model_name:
             # ЗАМОРОЗКА ВСЕХ СЛОЕВ КРОМЕ ФИНАЛЬНЫХ

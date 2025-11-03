@@ -9,7 +9,10 @@ musan/
 musan_split/
 RIRS_NOISES/
 layers/
+initial_models/
+tdnn_models/
 a.py
+loss/their_cos_loss.py
 model000000001.model
 
 

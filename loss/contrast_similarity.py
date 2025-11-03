@@ -26,7 +26,7 @@ class LossFunction(nn.Module):
             all_intra_dists = []
             for i in range(batch_size):
                 dists = torch.pdist(outp[i], p=2)  # Только уникальные пары; аудиозаписи внутри каждого спикера: аудио1-аудио2, аудио2-аудио3...
-                all_intra_dists.append(dists)
+                all_intra_dists.append(dists) # Получаем попарные расстояния между векторами по типу dist(A, B) = √((4-1)² + (6-2)²) = √(9 + 16) = 5.0
 
             if all_intra_dists:
                 intra_dists = torch.cat(all_intra_dists)
