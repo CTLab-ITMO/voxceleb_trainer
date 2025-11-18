@@ -164,7 +164,7 @@ class ECAPA_TDNN(nn.Module):
         self.bn6 = nn.BatchNorm1d(192)
 
 
-    def forward(self, x, aug=False):
+    def forward(self, x, aug=False, get_raw=False):
         with torch.no_grad():
             x = self.torchfbank(x)+1e-6
             x = x.log()   
@@ -182,6 +182,9 @@ class ECAPA_TDNN(nn.Module):
 
         x = self.layer4(torch.cat((x1,x2,x3),dim=1))
         x = self.relu(x)
+
+        if get_raw:
+            return x
 
         t = x.size()[-1]
 

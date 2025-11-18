@@ -30,6 +30,9 @@ class SpeakerNet(nn.Module):
         SpeakerNetModel = importlib.import_module("models." + model).__getattribute__("MainModel")
         self.__S__ = SpeakerNetModel(**kwargs)
 
+        #if model == 'ECAPA' and trainfunc == 'cos_contrast_loss': # Если наша реализация лосса, берем софтмакс-лосс из ECAPA, но добавляем свою обработку
+            #trainfunc = 'aam_softmax_ecapa'
+
         LossFunction = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")
         self.__L__ = LossFunction(**kwargs)
 
@@ -54,7 +57,7 @@ class SpeakerNet(nn.Module):
 
 
 class ModelTrainer(object):
-    def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, freeze = False, **kwargs):
+    def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, max_no_improve_steps, lr_param, **kwargs):
         self.__model__ = speaker_model
         self.use_center_loss = hasattr(self.__model__.module.__L__, 'center_loss')
 
@@ -71,13 +74,17 @@ class ModelTrainer(object):
 
         self.__scheduler__, self.lr_step = Scheduler(self.__optimizer__, **kwargs)
 
+        self.lr_param = lr_param
+        self.is_adaptive = self.lr_param == 'adaptive'
+        if self.is_adaptive: # Если у нас меняющийся lr...
+            self.lr_step = 'iteration' # Будем менять на каждой итерации
+            self.max_no_improve_steps = max_no_improve_steps
+
         self.scaler = GradScaler()
 
         self.gpu = gpu
 
         self.mixedprec = mixedprec
-
-        self.freeze = freeze
 
         assert self.lr_step in ["epoch", "iteration"]
 
@@ -96,6 +103,13 @@ class ModelTrainer(object):
         top1 = 0
         # EER or accuracy
 
+        if self.is_adaptive: # Если у нас меняющийся lr...
+            verbose = True # Будем логгировать каждый шаг
+            no_improve_steps = 0
+            best_nloss = numpy.inf
+            global_best_nloss = numpy.inf # Если lr уже менялся, будем сравнивать с глобальным лучшим лоссом
+            freeze_part = 0 # Части разморозки: адаптер, последний слой, вся модель
+
         tstart = time.time()
 
         for data, data_label in loader:
@@ -103,7 +117,7 @@ class ModelTrainer(object):
             self.__model__.module.zero_grad()
             label = torch.LongTensor(data_label).cuda()
 
-            # ЕСЛИ ЦЕНТРАЛЬНЫЙ ЛОСС
+            # ЕСЛИ ЦЕНТРАЛЬНЫЙ ЛОСС (адаптивный lr для него не сделан)
             if self.use_center_loss:
                 torch.autograd.set_detect_anomaly(True)
                 if self.mixedprec:
@@ -174,7 +188,29 @@ class ModelTrainer(object):
                 sys.stdout.write("Loss {:f} TEER/TAcc {:2.3f}% - {:.2f} Hz ".format(loss / counter, top1 / counter, stepsize / telapsed))
                 sys.stdout.flush()
 
-            if self.lr_step == "iteration":
+            if self.is_adaptive:
+                if nloss < best_nloss: # Обновляем лучший лосс
+                    best_nloss = nloss
+                    no_improve_steps = 0
+                else: # Считаем число шагов, когда лосс не улучшается
+                    no_improve_steps += 1
+
+                if no_improve_steps >= self.max_no_improve_steps: # Если лосс не уменьшался дольше определенного числа шагов...
+                    if best_nloss < global_best_nloss: # ...Но при этом достигли лучшего лосса по сравнению с предыдущим lr, уменьшаем lr
+                        self.__scheduler__.step()
+                        global_best_nloss = best_nloss
+                    else: # Но если при этом при новом lr совершенно никакого улучшения лосса не последовало (остались на плато):
+                        # Можно было бы загружать параметры модели до этих n шагов без улучшения, но это каждый раз сохранение/загрузка
+                        ... # Размораживаем следующую часть модели либо заканчиваем обучение
+                        # Возвращаем lr
+                        best_nloss = numpy.inf # Возвращаемся к первоначальным показателям lr
+                        global_best_nloss = numpy.inf
+                        no_improve_steps = 0
+                        freeze_part += 1
+
+                # С центральным лоссом реализации пока нет
+
+            elif self.lr_step == "iteration":
                 self.__scheduler__.step()
                 if self.use_center_loss:
                     self.scheduler_W.step()
@@ -366,7 +402,7 @@ class ModelTrainer(object):
             for name, param in self.__model__.module.named_parameters():
                 if '__L__.center_loss' in name: # Если централ лосс, замораживается вспомогательный класс; необучаемый параметр
                     param.requires_grad = False
-                if self.freeze: # Если заморозка включена, замораживаем ВСЁ, кроме fc6 и bn6 и полносвязного слоя в лоссе (если есть)
+                if self.lr_param == 'last': # Если заморозка включена, замораживаем ВСЁ, кроме fc6 и bn6 и полносвязного слоя в лоссе (если есть)
                     if 'fc6' in name or 'bn6' in name or '__L__.fc' in name:
                         param.requires_grad = True  # Размораживаем
                         print(f"Trainable: {name}")

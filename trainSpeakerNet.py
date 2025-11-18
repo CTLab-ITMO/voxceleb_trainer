@@ -34,7 +34,8 @@ parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator')
 parser.add_argument('--combinations', action='store_true', help='Enable combination sampling')
-parser.add_argument('--freeze', action='store_true', help='Freeze all except of last layers')
+parser.add_argument('--lr_param', type=str,  choices=['last', 'all', 'adaptive'],
+                    default='all', help='Freeze last layer, all layers or all layers with adaptive lr')
 
 ## Training details
 parser.add_argument('--test_interval',  type=int,   default=1,     help='Test and save every [test_interval] epochs')
@@ -45,13 +46,14 @@ parser.add_argument('--trainfunc',      type=str,   default="cosin_similarity", 
 parser.add_argument('--optimizer',      type=str,   default="adam", help='sgd or adam')
 parser.add_argument('--scheduler',      type=str,   default="steplr", help='Learning rate scheduler')
 parser.add_argument('--lr',             type=float, default=0.001,  help='Learning rate')
-parser.add_argument("--lr_decay",       type=float, default=0.95,   help='Learning rate decay every [test_interval] epochs')
+parser.add_argument("--lr_decay",       type=float, default=0.97,   help='Learning rate decay every [test_interval] epochs')
 parser.add_argument('--weight_decay',   type=float, default=0,      help='Weight decay in the optimizer')
+parser.add_argument("--max_no_improve_steps",       type=int, default=5,   help='Max number of steps without loss improving')
 
 ## Loss functions
 parser.add_argument("--hard_prob",      type=float, default=0.5,    help='Hard negative mining probability, otherwise random, only for some loss functions')
 parser.add_argument("--hard_rank",      type=int,   default=10,     help='Hard negative mining rank in the batch, only for some loss functions')
-parser.add_argument('--margin',         type=float, default=0.1,    help='Loss margin, only for some loss functions')
+parser.add_argument('--margin',         type=float, default=0.2,    help='Loss margin, only for some loss functions')
 parser.add_argument('--scale',          type=float, default=30,     help='Loss scale, only for some loss functions')
 parser.add_argument('--nPerSpeaker',    type=int,   default=1,      help='Number of utterances per speaker per batch, only for metric learning based losses')
 
