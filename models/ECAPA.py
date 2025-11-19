@@ -164,29 +164,30 @@ class ECAPA_TDNN(nn.Module):
         self.bn6 = nn.BatchNorm1d(192)
 
 
-    def forward(self, x, aug=False, get_raw=False):
-        with torch.no_grad():
-            x = self.torchfbank(x)+1e-6
-            x = x.log()   
-            x = x - torch.mean(x, dim=-1, keepdim=True)
-            if aug == True:
-                x = self.specaug(x)
+    def forward(self, x, aug=False, mode='default'):
+        if mode != 'get_res_embs': # Если х - не уже посчитанные до статистического пулинга эмбеддинги, считаем с нуля (иначе пропускаем этап)
+            with torch.no_grad():
+                x = self.torchfbank(x)+1e-6
+                x = x.log()
+                x = x - torch.mean(x, dim=-1, keepdim=True)
+                if aug == True:
+                    x = self.specaug(x)
 
-        x = self.conv1(x)
-        x = self.relu(x)
-        x = self.bn1(x)
+            x = self.conv1(x)
+            x = self.relu(x)
+            x = self.bn1(x)
 
-        x1 = self.layer1(x)
-        x2 = self.layer2(x+x1)
-        x3 = self.layer3(x+x1+x2)
+            x1 = self.layer1(x)
+            x2 = self.layer2(x+x1)
+            x3 = self.layer3(x+x1+x2)
 
-        x = self.layer4(torch.cat((x1,x2,x3),dim=1))
-        x = self.relu(x)
+            x = self.layer4(torch.cat((x1,x2,x3),dim=1))
+            x = self.relu(x)
 
-        if get_raw:
-            return x
+            if mode == 'get_stat_embs': # Если надо вернуть до статистического пулинга, возвращаем
+                return x
 
-        t = x.size()[-1]
+        t = x.size()[-1] # Если mode == 'get_res_embs', число эмбеддингов будет меньше (только по окну временного шага), а так - логика такая же
 
         global_x = torch.cat((x,torch.mean(x,dim=2,keepdim=True).repeat(1,1,t), torch.sqrt(torch.var(x,dim=2,keepdim=True).clamp(min=1e-4)).repeat(1,1,t)), dim=1)
         

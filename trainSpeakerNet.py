@@ -95,7 +95,7 @@ parser.add_argument('--n_mels',         type=int,   default=40,     help='Number
 parser.add_argument('--log_input',      type=bool,  default=False,  help='Log input features')
 parser.add_argument('--model',          type=str,   default="",     help='Name of model definition')
 parser.add_argument('--encoder_type',   type=str,   default="SAP",  help='Type of encoder')
-parser.add_argument('--nOut',           type=int,   default=512,    help='Embedding size in the last FC layer')
+parser.add_argument('--nOut',           type=int,   default=192,    help='Embedding size in the last FC layer')
 parser.add_argument('--sinc_stride',    type=int,   default=10,    help='Stride size of the first analytic filterbank layer of RawNet3')
 
 ## For test only
@@ -231,10 +231,10 @@ def main_worker(gpu, ngpus_per_node, args):
     modelfiles.sort()
 
     if (args.initial_model != ""):
-        trainer.loadParameters(args.initial_model, args.model)
+        trainer.loadParameters(args.initial_model, args.model, args.trainfunc == 'cos_contrast_loss')
         print("Model {} loaded!".format(args.initial_model))
     elif len(modelfiles) >= 1:
-        trainer.loadParameters(modelfiles[-1], args.model)
+        trainer.loadParameters(modelfiles[-1], args.model, args.trainfunc == 'cos_contrast_loss')
         print("Model {} loaded from previous state!".format(modelfiles[-1]))
         it = int(os.path.splitext(os.path.basename(modelfiles[-1]))[0][5:]) + 1
 

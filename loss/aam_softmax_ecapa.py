@@ -1,16 +1,17 @@
-'''
+
 import torch, math
 import torch.nn as nn
 import torch.nn.functional as F
 from utils import accuracy
 
 
-class AAMsoftmax(nn.Module):
-    def __init__(self, nClasses, margin, scale):
-        super(AAMsoftmax, self).__init__()
+class LossFunction(nn.Module):
+    def __init__(self, nClasses, margin, scale, **kwargs):
+        super(LossFunction, self).__init__()
         self.m = 0.2
         self.s = 30
         n_class = 5994 # Параметры в ECAPA
+        self.test_normalize = True
         self.weight = torch.nn.Parameter(torch.FloatTensor(n_class, 192), requires_grad=True)
         self.ce = nn.CrossEntropyLoss()
         nn.init.xavier_normal_(self.weight, gain=1)
@@ -29,9 +30,4 @@ class AAMsoftmax(nn.Module):
         output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
         output = output * self.s
 
-        loss = self.ce(output, label)
-        prec1 = accuracy(output.detach(), label.detach(), topk=(1,))[0]
-
-        return loss, prec1
-
-'''
+        return output

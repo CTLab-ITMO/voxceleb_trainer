@@ -23,37 +23,65 @@ class WrappedModel(nn.Module):
         return self.module(x, label)
 
 
+
 class SpeakerNet(nn.Module):
     def __init__(self, model, optimizer, trainfunc, nPerSpeaker, **kwargs):
         super(SpeakerNet, self).__init__()
 
         SpeakerNetModel = importlib.import_module("models." + model).__getattribute__("MainModel")
         self.__S__ = SpeakerNetModel(**kwargs)
+        self.trainfunc = trainfunc
 
-        #if model == 'ECAPA' and trainfunc == 'cos_contrast_loss': # Если наша реализация лосса, берем софтмакс-лосс из ECAPA, но добавляем свою обработку
-            #trainfunc = 'aam_softmax_ecapa'
-
-        LossFunction = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")
+        if model == 'ECAPA' and trainfunc == 'cos_contrast_loss': # Если наша реализация лосса, берем софтмакс-лосс из ECAPA, но добавляем свою обработку
+            LossFunction = importlib.import_module("loss." + 'aam_softmax_ecapa').__getattribute__("LossFunction")
+            self.loss_function = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")(**kwargs)
+        else:
+            LossFunction = importlib.import_module("loss." + trainfunc).__getattribute__("LossFunction")
         self.__L__ = LossFunction(**kwargs)
+
+        self.cos = nn.CosineSimilarity(dim=1, eps=1e-8)
 
         self.nPerSpeaker = nPerSpeaker
         self.outp = None
 
     def forward(self, data, label=None):
 
+        #print(label.shape)
+        #print(data.shape)
+        nPerSpeaker = data.shape[0]
+
         data = data.reshape(-1, data.size()[-1]).cuda()
         self.outp = self.__S__.forward(data)
+        #print(self.outp.shape)
+        if self.trainfunc == 'cos_contrast_loss':
+            with torch.no_grad():
+                nostat_embs = self.__S__.forward(data, mode='get_stat_embs')
+                #print(nostat_embs.shape)
+                framed_embs = nostat_embs.unfold(dimension=2, size=10, step=5)
+                cos_sim = []
+                for i in range(framed_embs.shape[2]):
+                    cur_res_embs = self.__S__.forward(framed_embs[:, :, i], mode='get_res_embs')
+                    #print(cur_res_embs.shape)
+
+                    cur_cos_sim = self.cos(cur_res_embs, self.outp)
+                    cos_sim.append(cur_cos_sim)
 
         if label == None:
             return self.outp
 
         else:
+            label = label.repeat_interleave(nPerSpeaker) # Повторяем метки nPerSpeaker раз
+            if self.trainfunc != 'cos_contrast_loss':
+                if 'softmax' not in self.trainfunc: # Для чисто косинусного/контрастнго лосса добавляем ось nPerSpeaker
+                    self.outp = self.outp.reshape(self.nPerSpeaker, -1, self.outp.size()[-1]).transpose(1, 0).squeeze(1)
+                nloss, prec1 = self.__L__.forward(self.outp, label)
+                return nloss, prec1
+            else:
+                linear_embs = self.__L__.forward(self.outp, label)
+                #print(linear_embs.shape)
+                loss, prec1 = self.loss_function(cos_sim, linear_embs, label)
+                return loss, prec1
 
-            self.outp = self.outp.reshape(self.nPerSpeaker, -1, self.outp.size()[-1]).transpose(1, 0).squeeze(1)
-
-            nloss, prec1 = self.__L__.forward(self.outp, label)
-
-            return nloss, prec1
 
 
 class ModelTrainer(object):
@@ -335,7 +363,7 @@ class ModelTrainer(object):
     ## Load parameters
     ## ===== ===== ===== ===== ===== ===== ===== =====
 
-    def loadParameters(self, path, model_name):
+    def loadParameters(self, path, model_name, take_adapter = False):
 
         self_state = self.__model__.module.state_dict()
         loaded_state = torch.load(path, map_location="cuda:%d" % self.gpu)
@@ -349,11 +377,14 @@ class ModelTrainer(object):
                 for key, value in loaded_state.items():
                     # Пропускаем ВСЕ параметры лосса
                     if 'speaker_loss' in key:
-                        print(f"Skipping classifier parameter: {key}")
-                        continue
-
+                        if take_adapter:
+                            new_key = key.replace('speaker_loss.', '__L__.')  # Заменяем префикс
+                            new_dict[new_key] = value
+                        else:
+                            print(f"Skipping classifier parameter: {key}")
+                            continue
                     # Преобразуем имена энкодера
-                    if 'speaker_encoder' in key:
+                    elif 'speaker_encoder' in key:
                         new_key = key.replace('speaker_encoder.', '__S__.')  # Заменяем префикс
                         new_dict[new_key] = value
                     else:
@@ -403,7 +434,7 @@ class ModelTrainer(object):
                 if '__L__.center_loss' in name: # Если централ лосс, замораживается вспомогательный класс; необучаемый параметр
                     param.requires_grad = False
                 if self.lr_param == 'last': # Если заморозка включена, замораживаем ВСЁ, кроме fc6 и bn6 и полносвязного слоя в лоссе (если есть)
-                    if 'fc6' in name or 'bn6' in name or '__L__.fc' in name:
+                    if 'fc6' in name or 'bn6' in name or '__L__.fc' in name or '__L__.weight' in name:
                         param.requires_grad = True  # Размораживаем
                         print(f"Trainable: {name}")
                     else:
