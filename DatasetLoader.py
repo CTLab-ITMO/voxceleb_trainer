@@ -15,6 +15,7 @@ from scipy import signal
 from scipy.io import wavfile
 from torch.utils.data import Dataset, DataLoader
 import torch.distributed as dist
+from itertools import combinations
 
 def round_down(num, divisor):
     return num - (num%divisor)
@@ -113,7 +114,7 @@ class AugmentWAV(object):
 
 
 class train_dataset_loader(Dataset):
-    def __init__(self, train_list, augment, musan_path, rir_path, max_frames, train_path, **kwargs):
+    def __init__(self, train_list, augment, musan_path, rir_path, max_frames, train_path, valid = False, first_index = None, last_index = None, **kwargs):
 
         self.augment_wav = AugmentWAV(musan_path=musan_path, rir_path=rir_path, max_frames = max_frames)
 
@@ -121,11 +122,16 @@ class train_dataset_loader(Dataset):
         self.max_frames = max_frames;
         self.musan_path = musan_path
         self.rir_path   = rir_path
+        if valid:
+            augment = False
         self.augment    = augment
         
         # Read training files
         with open(train_list) as dataset_file:
-            lines = dataset_file.readlines();
+            all_lines = dataset_file.readlines()
+            start = 0 if first_index is None else first_index
+            end = len(all_lines) if last_index is None else last_index
+            lines = all_lines[start:end]
 
         # Make a dictionary of ID names and ID indices
         dictkeys = list(set([x.split()[0] for x in lines]))
@@ -188,6 +194,8 @@ class test_dataset_loader(Dataset):
 
     def __len__(self):
         return len(self.test_list)
+
+
 
 
 class train_dataset_sampler(torch.utils.data.Sampler):
@@ -268,4 +276,128 @@ class train_dataset_sampler(torch.utils.data.Sampler):
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
+
+
+
+class CombinationSpeakerSampler(torch.utils.data.Sampler):
+    def __init__(self, data_source, nPerSpeaker, max_seg_per_spk, batch_size, distributed=False, seed=1234, **kwargs):
+        self.data_label = data_source.data_label
+        self.nPerSpeaker = nPerSpeaker
+        self.max_seg_per_spk = max_seg_per_spk
+        self.batch_size = batch_size
+        self.epoch = 0
+        self.seed = seed
+        self.distributed = distributed
+
+        # Создаем словарь: спикер -> список его аудиозаписей
+        self.speaker_to_indices = {}
+        for index, speaker_label in enumerate(self.data_label):
+            if speaker_label not in self.speaker_to_indices:
+                self.speaker_to_indices[speaker_label] = []
+            self.speaker_to_indices[speaker_label].append(index)
+
+        # Группируем записи каждого спикера на группы по nPerSpeaker
+        self.speaker_groups = {}
+        self.speakers = []
+
+        for speaker, indices in self.speaker_to_indices.items():
+            # Перемешиваем записи спикера и выбираем случайные max_seg_per_spk
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+            shuffled_indices = torch.randperm(min(len(indices),self.max_seg_per_spk), generator=g).tolist()
+            shuffled_data = [indices[i] for i in shuffled_indices]
+
+            # Разбиваем на группы
+            groups = []
+            for i in range(0, len(shuffled_data), nPerSpeaker):
+                group = shuffled_data[i:i + nPerSpeaker]
+                if len(group) == nPerSpeaker:  # Только полные группы
+                    groups.append(group)
+
+            if groups:  # Если есть хотя бы одна полная группа
+                self.speaker_groups[speaker] = groups
+                self.speakers.append(speaker)
+
+        print(f"Found {len(self.speakers)} speakers with groups")
+        for speaker in self.speakers:
+            print(f"Speaker {speaker}: {len(self.speaker_groups[speaker])} groups")
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+
+        # Создаем итераторы для каждого спикера
+        speaker_iterators = {}
+        for speaker in self.speakers:
+            groups = self.speaker_groups[speaker][:]  # Копируем группы
+            # Перемешиваем группы для этого epoch
+            shuffle_indices = torch.randperm(len(groups), generator=g).tolist()
+            shuffled_groups = [groups[i] for i in shuffle_indices]
+            speaker_iterators[speaker] = iter(shuffled_groups)
+
+        # Создаем все возможные сочетания спикеров размера batch_size
+        from itertools import combinations
+        all_speaker_combinations = list(combinations(self.speakers, self.batch_size))
+        # Перемешиваем сочетания
+        shuffle_indices = torch.randperm(len(all_speaker_combinations), generator=g).tolist()
+        speaker_combinations = [all_speaker_combinations[i] for i in shuffle_indices]
+
+        #print(numpy.array(speaker_combinations).shape)
+        #print(speaker_combinations[:5])
+
+        mixed_list = []
+
+        # Проходим по всем сочетаниям спикеров
+        num_combo = 0
+        for combo in speaker_combinations:
+            batch_group = []
+
+            # Для каждого спикера в сочетании берем следующую группу
+            for speaker in combo:
+                try:
+                    group = next(speaker_iterators[speaker])
+                    batch_group.append(group)
+                except StopIteration:
+                    # Если у спикера закончились группы, создаем новый итератор
+                    groups = self.speaker_groups[speaker][:]
+                    shuffle_indices = torch.randperm(len(groups), generator=g).tolist()
+                    shuffled_groups = [groups[i] for i in shuffle_indices]
+                    speaker_iterators[speaker] = iter(shuffled_groups)
+                    group = next(speaker_iterators[speaker])
+                    batch_group.append(group)
+                #if num_combo < 1:
+                    #print(f"Num comb: {num_combo}, speaker: {speaker}, group: {group}")
+            num_combo += 1
+
+            # Добавляем группу в mixed_list (это будет один элемент батча)
+            mixed_list.append(batch_group)
+
+        # Преобразуем в нужный формат: список списков индексов
+        final_list = []
+        for batch_group in mixed_list:
+            # batch_group - это список групп для одного сочетания спикеров
+            # Добавляем каждую группу отдельно в final_list
+            for group in batch_group:
+                final_list.append(group)
+
+        #print(numpy.array(final_list).shape)
+        #print(final_list[:5])
+
+        ## Divide data to each GPU
+        if self.distributed:
+            total_size  = round_down(len(final_list), self.batch_size * dist.get_world_size())
+            start_index = int ( ( dist.get_rank()     ) / dist.get_world_size() * total_size )
+            end_index   = int ( ( dist.get_rank() + 1 ) / dist.get_world_size() * total_size )
+            self.num_samples = end_index - start_index
+            return iter(final_list[start_index:end_index])
+        else:
+            total_size = round_down(len(final_list), self.batch_size)
+            self.num_samples = total_size
+            return iter(final_list[:total_size])
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 

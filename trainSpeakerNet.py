@@ -29,18 +29,21 @@ parser.add_argument('--config',         type=str,   default=None,   help='Config
 parser.add_argument('--max_frames',     type=int,   default=600,    help='Input length to the network for training')
 parser.add_argument('--eval_frames',    type=int,   default=300,    help='Input length to the network for testing 0 uses the whole files')
 parser.add_argument('--batch_size',     type=int,   default=20,    help='Batch size, number of speakers per batch')
-parser.add_argument('--max_seg_per_spk', type=int,  default=500,    help='Maximum number of utterances per speaker per epoch')
+parser.add_argument('--max_seg_per_spk', type=int,  default=10,    help='Maximum number of utterances per speaker per epoch')
 parser.add_argument('--nDataLoaderThread', type=int, default=5,     help='Number of loader threads')
 parser.add_argument('--augment',        type=bool,  default=False,  help='Augment input')
 parser.add_argument('--seed',           type=int,   default=10,     help='Seed for the random number generator')
 parser.add_argument('--combinations', action='store_true', help='Enable combination sampling')
-parser.add_argument('--lr_param', type=str,  choices=['last', 'all', 'adaptive'],
-                    default='all', help='Freeze last layer, all layers or all layers with adaptive lr')
 
 ## Training details
 parser.add_argument('--test_interval',  type=int,   default=1,     help='Test and save every [test_interval] epochs')
 parser.add_argument('--max_epoch',      type=int,   default=500,    help='Maximum number of epochs')
 parser.add_argument('--trainfunc',      type=str,   default="cosin_similarity",     help='Loss function')
+parser.add_argument('--lr_param', type=str,  choices=['last', 'all', 'adaptive'],
+                    default='all', help='Freeze last layer, all layers or all layers with adaptive lr')
+parser.add_argument("--valid_part",       type=float, default=0.1,   help='Part of train dataset for validation')
+parser.add_argument("--max_no_improve_steps",       type=int, default=7,   help='Max number of steps without loss improving')
+parser.add_argument("--valid_steps",       type=int, default=4,   help='Count valid loss every valid_steps')
 
 ## Optimizer
 parser.add_argument('--optimizer',      type=str,   default="adam", help='sgd or adam')
@@ -48,7 +51,6 @@ parser.add_argument('--scheduler',      type=str,   default="steplr", help='Lear
 parser.add_argument('--lr',             type=float, default=0.001,  help='Learning rate')
 parser.add_argument("--lr_decay",       type=float, default=0.97,   help='Learning rate decay every [test_interval] epochs')
 parser.add_argument('--weight_decay',   type=float, default=0,      help='Weight decay in the optimizer')
-parser.add_argument("--max_no_improve_steps",       type=int, default=5,   help='Max number of steps without loss improving')
 
 ## Loss functions
 parser.add_argument("--hard_prob",      type=float, default=0.5,    help='Hard negative mining probability, otherwise random, only for some loss functions')
@@ -130,46 +132,39 @@ if args.config is not None:
 ## Trainer script
 ## ===== ===== ===== ===== ===== ===== ===== =====
 
-class CombinationSampler(torch.utils.data.Sampler):
-    def __init__(self, base_sampler, batch_size):
-        self.base_sampler = base_sampler
-        self.batch_size = batch_size
-        self.epoch = 0
+# Делим трейн файл на трейн и валидационную часть
+def calculate_first_train_line(file_path, valid_part):
+    # Собираем все уникальные ID и их первое вхождение
+    id_first_occurrence = {}
 
-        base_iterator = iter(self.base_sampler)
-        self.all_groups = list(base_iterator)  # Получаем все группы из базового семплера
-        self.num_groups = len(self.all_groups)
+    with open(file_path, 'r', encoding='utf-8') as file:
+        for line_num, line in enumerate(file):
+            line = line.strip()
+            if not line:
+                continue
 
-        # Генерируем ВСЕ возможные комбинации батчей
-        self.all_batch_combinations = list(combinations(range(self.num_groups), batch_size))
-        random.shuffle(self.all_batch_combinations)  # Перемешиваем комбинации
+            parts = line.split()
+            if parts:
+                current_id = parts[0]
+                if current_id not in id_first_occurrence:
+                    id_first_occurrence[current_id] = line_num
 
-    def set_epoch(self, epoch: int) -> None:
-        """Передаем вызов базовому семплеру"""
-        self.epoch = epoch
-        self.base_sampler.set_epoch(epoch)
+    # Сортируем ID по порядку их первого появления
+    sorted_ids = sorted(id_first_occurrence.keys(),
+                        key=lambda x: id_first_occurrence[x])
 
-    def __iter__(self):
-        print(f"Всего групп: {len(self.all_groups)}")
-        print(f"Всего комбинаций: {len(self.all_batch_combinations)}")
+    total_unique_ids = len(sorted_ids)
+    valid_count = int(round(total_unique_ids * valid_part))
 
-        # Тестовый вывод
-        for i, combo in enumerate(self.all_batch_combinations[:5]):  # Первые 5 батчей
-            batch = [self.all_groups[idx] for idx in combo]
-            print(f"Батч {i}: {combo} -> {batch}")
+    #print(f"Всего уникальных ID: {total_unique_ids}")
+    #print(f"Количество ID для валидации: {valid_count}")
 
-        # Возвращаем итератор по всем комбинациям
-        for combo in self.all_batch_combinations:
-            # "Распаковываем" группы в плоский список индексов
-            flat_batch = []
-            for group_idx in combo:
-                flat_batch.extend(self.all_groups[group_idx])  # ← РАСПАКОВКА!
-            yield flat_batch  # ← плоский список индексов
-
-    def __len__(self):
-        return len(self.all_batch_combinations)
-
-
+    # Определяем номер строки первого тренировочного ID
+    first_train_id = sorted_ids[valid_count]
+    first_train_line = id_first_occurrence[first_train_id]
+    #print(f"Первый ID для тренировки: {first_train_id}")
+    #print(f"Номер строки первого тренировочного ID: {first_train_line}")
+    return first_train_line
 
 
 def main_worker(gpu, ngpus_per_node, args):
@@ -203,16 +198,16 @@ def main_worker(gpu, ngpus_per_node, args):
         scorefile   = open(args.result_save_path+"/scores.txt", "a+")
 
     ## Initialise trainer and data loader
-    train_dataset = train_dataset_loader(**vars(args))
-
-    # Базовый семплер
-    base_sampler = train_dataset_sampler(train_dataset, **vars(args))
+    first_train_index = calculate_first_train_line(args.train_list, args.valid_part)
+    train_dataset = train_dataset_loader(first_index = first_train_index, **vars(args))
+    valid_dataset = train_dataset_loader(last_index = first_train_index, valid = True, **vars(args))
 
     # ВЫБОР СЭМПЛЕРА ПО АРГУМЕНТУ
     if args.combinations:  # Если передан флаг --combinations
-        train_sampler = CombinationSampler(base_sampler, args.batch_size)
+        train_sampler = CombinationSpeakerSampler(train_dataset, **vars(args))
     else:
-        train_sampler = base_sampler  # Оригинальный семплер
+        train_sampler = train_dataset_sampler(train_dataset, **vars(args))
+    valid_sampler = train_dataset_sampler(valid_dataset, **vars(args)) # Для валидации - простой сэмплер
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -224,6 +219,16 @@ def main_worker(gpu, ngpus_per_node, args):
         drop_last=not args.combinations,  # ← Меняем drop_last для комбинаций
     )
 
+    valid_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.nDataLoaderThread,
+        sampler=valid_sampler,
+        pin_memory=False,
+        worker_init_fn=worker_init_fn,
+        drop_last=True,
+    )
+
     trainer     = ModelTrainer(s, **vars(args))
 
     ## Load model weights
@@ -231,13 +236,14 @@ def main_worker(gpu, ngpus_per_node, args):
     modelfiles.sort()
 
     if (args.initial_model != ""):
-        trainer.loadParameters(args.initial_model, args.model, args.trainfunc == 'cos_contrast_loss')
+        trainer.loadParameters(args.initial_model)
         print("Model {} loaded!".format(args.initial_model))
     elif len(modelfiles) >= 1:
-        trainer.loadParameters(modelfiles[-1], args.model, args.trainfunc == 'cos_contrast_loss')
+        trainer.loadParameters(modelfiles[-1])
         print("Model {} loaded from previous state!".format(modelfiles[-1]))
         it = int(os.path.splitext(os.path.basename(modelfiles[-1]))[0][5:]) + 1
 
+    # для адаптивного лосса не написано тут
     for ii in range(1,it):
         trainer.__scheduler__.step()
 
@@ -282,7 +288,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
 
-        loss, traineer = trainer.train_network(train_loader, verbose=(args.gpu == 0))
+        loss, traineer, is_end = trainer.train_network(train_loader, valid_loader, verbose=(args.gpu == 0))
 
         if args.gpu == 0:
             print('\n',time.strftime("%Y-%m-%d %H:%M:%S"), "Epoch {:d}, TEER/TAcc {:2.2f}, TLOSS {:f}, LR {:f}".format(it, traineer, loss, max(clr)))
@@ -311,6 +317,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
                 scorefile.flush()
 
+        if is_end:
+            break
+
     if args.gpu == 0:
         scorefile.close()
 
@@ -321,6 +330,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
 def main():
+    import shutil
+    if os.path.exists(args.save_path):
+        shutil.rmtree(args.save_path)
+
     args.model_save_path     = args.save_path+"/model"
     args.result_save_path    = args.save_path+"/result"
     args.feat_save_path      = ""
