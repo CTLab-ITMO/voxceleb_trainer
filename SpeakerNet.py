@@ -45,6 +45,8 @@ class SpeakerNet(nn.Module):
         if self.model_name == 'ECAPA':
             self.adapter_params = ['__L__.weight']
             self.first_params = ['__S__.fc6', '__S__.bn6']
+            self.norm_params = ['__S__.layer1.bn1', '__S__.layer1.bn3', '__S__.layer2.bn1', '__S__.layer2.bn3',
+                                 '__S__.layer3.bn1', '__S__.layer3.bn3', '__S__.bn5', '__S__.bn6']
 
     def forward(self, data, label=None):
         data = data.reshape(-1, data.size()[-1]).cuda()
@@ -53,7 +55,9 @@ class SpeakerNet(nn.Module):
         if self.trainfunc == 'cos_contrast_loss':
             with torch.no_grad():
                 nostat_embs = self.__S__.forward(data, mode='get_stat_embs')
+                print(f"REAL SHAPE: {nostat_embs.shape}")
                 framed_embs = nostat_embs.unfold(dimension=2, size=10, step=5)
+                print(f"FRAMED SHAPE: {framed_embs.shape}")
                 cos_sim = []
                 for i in range(framed_embs.shape[2]):
                     cur_res_embs = self.__S__.forward(framed_embs[:, :, i], mode='get_res_embs')
@@ -97,28 +101,32 @@ class ModelTrainer(object):
         self.lr_decay = lr_decay # На что домножаем lr для уменьшения
         self.lr = lr # Первоначальный lr
         self.unfreeze_params = [] # Параметры, которые нужно размораживать, идут по порядку (шаблоны названий)
+        names = []
         if self.is_adaptive and self.use_cos_contrast_loss:  # Если этот лосс, сперва замораживаем всё, кроме адаптера (если в адаптере вообще есть веса)
-            self.unfreeze_params = [self.__model__.module.adapter_params, self.__model__.module.first_params]
-        elif self.lr_param == 'last' or (self.lr_param == 'adaptive' and not self.use_cos_contrast_loss): # Если режим "хвост" или адаптера нет, сразу первые параметры
+            self.unfreeze_params = [self.__model__.module.adapter_params, self.__model__.module.first_params, self.__model__.module.norm_params]
+            names = ["Adapter level", "First level", "Batch norm level"]
+        elif self.is_adaptive and not self.use_cos_contrast_loss: # Если адаптера нет, сразу первые параметры
+            self.unfreeze_params = [self.__model__.module.adapter_params + self.__model__.module.first_params, self.__model__.module.norm_params]
+            names = ["First level", "Batch norm level"]
+        elif self.lr_param == 'last':
             self.unfreeze_params = [self.__model__.module.adapter_params + self.__model__.module.first_params]
+            names = ["First level"]
+        print(names)
+        print(self.unfreeze_params)
 
-        # Список самих параметров по уровням разморозки; если last, у нас будет разморожен только первый слой, иначе добавляем еще слой остальных параметров
-        self.unfreeze_params_params = [[] for _ in range(len(self.unfreeze_params) + int(not(lr_param == 'last')))]
+        # Список самих параметров по уровням разморозки
+        self.unfreeze_params_params = [[] for _ in range(len(self.unfreeze_params) + int((lr_param == 'all')))]
         for name, param in self.__model__.module.named_parameters():
-            is_on_first_levels = False # Находится ли параметр на уровне адаптера/последних слоев для разморозки
+            level_name = "All levels"
             for i, name_tuple in enumerate(self.unfreeze_params):  # name_tuple - коллекция названий параметров на уровне i
-                if i == 0 and len(self.unfreeze_params) > 1:
-                    level_name = "Adapter_level"
-                else:
-                    level_name = "First level"
+                level_name = names[i]
                 if any(name_pattern in name for name_pattern in name_tuple):  # Если имя параметра совпадает с каким-либо из списка для разморозки
                     self.unfreeze_params_params[i].append(name)  # Вставляем на нужный уровень ссылки на параметры, соответствующие именам
                     print(f"{level_name}: {name}")
-                    is_on_first_levels = True
                     break
-            if not is_on_first_levels and lr_param != 'last':
-                self.unfreeze_params_params[-1].append(name) # Последняя коллекция - список параметров, которые размораживаются в последнюю очередь
-                print(f"Last level: {name}")
+            if lr_param == 'all':
+                print(f"{level_name}: {name}")
+                self.unfreeze_params_params[0].append(name) # Если 'all', все параметры добавляются
 
         cur_params = []
         for name, param in self.__model__.module.named_parameters():
