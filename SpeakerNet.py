@@ -81,7 +81,8 @@ class SpeakerNet(nn.Module):
 
 
 class ModelTrainer(object):
-    def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, max_no_improve_steps, lr, lr_param, lr_decay, weight_decay, valid_steps, **kwargs):
+    def __init__(self, speaker_model, optimizer, scheduler, gpu, mixedprec, max_no_improve_steps, lr, lr_param,
+                 lr_decay, weight_decay, valid_steps, coef_train_loss, **kwargs):
         self.__model__ = speaker_model
         self.model_name = self.__model__.module.model_name
         self.trainfunc = self.__model__.module.trainfunc
@@ -89,6 +90,7 @@ class ModelTrainer(object):
         self.use_cos_contrast_loss = self.trainfunc == 'cos_contrast_loss'
         self.steps_before_validation = 0
         self.valid_steps = valid_steps
+        self.coef_train_loss = coef_train_loss
 
         self.lr_param = lr_param # Режим обучения: адаптивный, обучаем всё или только хвост
         self.is_adaptive = self.lr_param == 'adaptive'
@@ -122,10 +124,10 @@ class ModelTrainer(object):
                 level_name = names[i]
                 if any(name_pattern in name for name_pattern in name_tuple):  # Если имя параметра совпадает с каким-либо из списка для разморозки
                     self.unfreeze_params_params[i].append(name)  # Вставляем на нужный уровень ссылки на параметры, соответствующие именам
-                    print(f"{level_name}: {name}")
+                    #print(f"{level_name}: {name}")
                     break
             if lr_param == 'all':
-                print(f"{level_name}: {name}")
+                #print(f"{level_name}: {name}")
                 self.unfreeze_params_params[0].append(name) # Если 'all', все параметры добавляются
 
         cur_params = []
@@ -200,6 +202,7 @@ class ModelTrainer(object):
         counter = 0
         index = 0
         loss = 0
+        steps_loss = 0
         top1 = 0
         # EER or accuracy
 
@@ -275,6 +278,7 @@ class ModelTrainer(object):
                     self.__optimizer__.step()
 
             loss += nloss.detach().cpu().item()
+            steps_loss += nloss.detach().cpu().item()
             top1 += prec1.detach().cpu().item()
             counter += 1
             index += stepsize
@@ -291,10 +295,14 @@ class ModelTrainer(object):
             if self.steps_before_validation == self.valid_steps: # Каждые valid_steps шагов проверяем валидационный лосс
                 self.steps_before_validation = 0
                 # Валидация
-                nloss, acc = self.validate(valid_loader)
-                print(f"Step: {index}, valid loss: {nloss}")
+                train_loss = steps_loss / self.valid_steps
+                steps_loss = 0
+                valid_loss, acc = self.validate(valid_loader)
+                print(f"Step: {index}, train loss: {train_loss}, valid loss: {valid_loss}")
+                #nloss = valid_loss
+                nloss = train_loss
 
-                if nloss < self.best_nloss:
+                if nloss < self.best_nloss / self.coef_train_loss:
                     self.best_nloss = nloss
                     self.no_improve_steps = 0
                 else: # Считаем число шагов, когда лосс не улучшается
@@ -303,10 +311,11 @@ class ModelTrainer(object):
 
                     if self.no_improve_steps >= self.max_no_improve_steps:  # Если лосс не уменьшался дольше определенного числа шагов...
                         if not self.is_adaptive: # Если не адаптивный lr, просто прекращаем обучение
-                            return (self.best_nloss, top1 / counter, True)
+                            print("rr")
+                            #return (self.best_nloss, top1 / counter, True)
                         else:
                             print(f"Global best loss: {self.global_best_nloss}, best loss: {self.best_nloss}")
-                            if self.best_nloss < self.global_best_nloss: # Если адаптивный и при этом достигли лучшего лосса по сравнению с предыдущим lr, уменьшаем lr
+                            if self.best_nloss < self.global_best_nloss  / self.coef_train_loss: # Если адаптивный и при этом достигли лучшего лосса по сравнению с предыдущим lr, уменьшаем lr
                                 train_lr *= self.lr_decay
                                 self.global_best_nloss = self.best_nloss
                                 self.no_improve_steps = 0
@@ -545,7 +554,7 @@ class ModelTrainer(object):
                     for param in param_list:
                         param.requires_grad = False
         '''
-        print(self.unfreeze_params_params[0])
+        #print(self.unfreeze_params_params[0])
 
         for name, param in self.__model__.module.named_parameters():
             if name in self.unfreeze_params_params[0]:
@@ -553,9 +562,9 @@ class ModelTrainer(object):
             else:
                 param.requires_grad = False
 
-        for name, param in self.__model__.module.named_parameters():
-            print("NAME OF PARAM", name)
-            print(param.requires_grad == True)
+        #for name, param in self.__model__.module.named_parameters():
+            #print("NAME OF PARAM", name)
+            #print(param.requires_grad == True)
 
         if self.model_name == "redimnet":
             # ЗАМОРОЗКА ВСЕХ СЛОЕВ КРОМЕ ФИНАЛЬНЫХ
@@ -574,6 +583,6 @@ class ModelTrainer(object):
             for name, param in self.__model__.module.named_parameters():
                 if name in trainable_layers:
                     param.requires_grad = True
-                    print(f"Trainable: {name}")
+                    #print(f"Trainable: {name}")
                 else:
                     param.requires_grad = False

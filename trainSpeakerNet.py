@@ -44,6 +44,7 @@ parser.add_argument('--lr_param', type=str,  choices=['last', 'all', 'adaptive']
 parser.add_argument("--valid_part",       type=float, default=0.1,   help='Part of train dataset for validation')
 parser.add_argument("--max_no_improve_steps",       type=int, default=7,   help='Max number of steps without loss improving')
 parser.add_argument("--valid_steps",       type=int, default=4,   help='Count valid loss every valid_steps')
+parser.add_argument("--coef_train_loss",       type=int, default=1.15,   help='Coef for improving of train loss per step')
 
 ## Optimizer
 parser.add_argument('--optimizer',      type=str,   default="adam", help='sgd or adam')

@@ -318,9 +318,9 @@ class CombinationSpeakerSampler(torch.utils.data.Sampler):
                 self.speaker_groups[speaker] = groups
                 self.speakers.append(speaker)
 
-        print(f"Found {len(self.speakers)} speakers with groups")
-        for speaker in self.speakers:
-            print(f"Speaker {speaker}: {len(self.speaker_groups[speaker])} groups")
+        #print(f"Found {len(self.speakers)} speakers with groups")
+        #for speaker in self.speakers:
+            #print(f"Speaker {speaker}: {len(self.speaker_groups[speaker])} groups")
 
     def __iter__(self):
         g = torch.Generator()
